@@ -16,7 +16,10 @@ The system operates in two modes: a **live path** for low-latency feedback durin
 ```
 Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI → FL Studio (virtual MIDI port)
                                  └─→ [WAV Recorder] → .wav file ─┬─→ [Transcription (basic-pitch)] → .mid file → FL Studio (import)
-                                                                   └─→ [Timbre Cloning (RAVE/DDSP)] → .wav file → FL Studio (import)
+                                                                   └─→ [Timbre Cloning (DDSP subprocess)] → .wav file → FL Studio (import)
+                                                                              ↑
+                                                                 Calibration recording + base model
+                                                                        → fine-tuned model
 ```
 
 ### Stage 1 — Ingestion
@@ -37,27 +40,41 @@ After recording completes, Spotify `basic-pitch` (CNN, ONNX backend) runs on the
 
 ### Stage 5 — Post-Processing: Timbre Cloning
 
-After recording completes, **RAVE** (primary) or **DDSP** (fallback) processes the full `.wav` file to synthesize audio that recreates the instrument's acoustic texture. Output is a `.wav` file at 44.1 kHz.
+After recording completes, **DDSP** (Differentiable Digital Signal Processing) processes the full `.wav` file to synthesize audio that recreates the instrument's acoustic texture. Output is a `.wav` file at 44.1 kHz.
+
+DDSP runs in an **isolated Python 3.10 subprocess** (separate venv at `.venv-ddsp`) because its TensorFlow dependency is incompatible with the project's primary Python 3.11 environment. The main app invokes the DDSP interpreter via `subprocess` — no TensorFlow import ever occurs in the 3.11 process.
+
+### Stage 5a — Calibration
+
+Before timbre cloning, the user performs a one-time **calibration** per instrument:
+
+1. Select a pretrained DDSP base model (bundled: violin, flute) or provide a custom `.ckpt` checkpoint.
+2. Record a guided chromatic scale across the instrument's range (~30 seconds of distinct notes).
+3. The system fine-tunes the base model on the calibration recording, producing a personalized checkpoint stored in `calibrations/`.
+
+Calibration is available via both the CLI (`--calibrate --ddsp-model <name>`) and the Web UI's calibration page. Fine-tuning takes approximately 5–15 minutes on CPU; GPU support is optional but recommended.
 
 ### Stage 6 — The Bridge
 
 - **Live MIDI routing**: `mido` with `python-rtmidi` backend opens a virtual MIDI output port fed by the live aubio analyzer. FL Studio reads from this port in real time. On Windows, `loopMIDI` provides the virtual port.
 - **Post-processing file export**: The transcription stage writes a `.mid` file and the timbre cloning stage writes a `.wav` file. Both are imported into FL Studio after the session.
 
-## Dependencies (Split by Mode)
+## Dependencies (Split by Environment)
 
-| Group | File | Packages |
-|---|---|---|
-| Live runtime | `requirements.txt` | `sounddevice`, `numpy`, `aubio` (or `aubio-ledfx`), `mido`, `python-rtmidi`, `scipy` |
-| Post-processing | `requirements-post.txt` | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
-| Model training | `requirements-train.txt` | `acids-rave`, `torch`, `torchaudio` (or `ddsp`, `tensorflow` for DDSP fallback) |
+| Group | File | Environment | Packages |
+|---|---|---|---|
+| Live runtime | `requirements.txt` | Main (Python 3.11) | `sounddevice`, `numpy`, `aubio` (or `aubio-ledfx`), `mido`, `python-rtmidi`, `scipy` |
+| Transcription | `requirements-post.txt` | Main (Python 3.11) | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
+| Timbre cloning + calibration | `requirements-ddsp.txt` | DDSP (Python 3.10) | `ddsp`, `tensorflow`, `librosa` |
 
 ## Key Constraints
 
 | Constraint | Value |
 |---|---|
-| Python version | 3.11 |
+| Python version (main) | 3.11 |
+| Python version (DDSP) | 3.10 (separate `.venv-ddsp`, invoked as subprocess) |
 | Live-path latency | < 50 ms end-to-end (ingestion → aubio → MIDI send) |
 | Post-processing latency | Offline; no real-time constraint |
+| Calibration time | ~5–15 min CPU, faster with GPU |
 | Architecture | Live path is streaming-first; post-processing operates on complete files |
 | Primary OS | macOS (native virtual MIDI, BlackHole for future live audio); Windows via loopMIDI + VB-Cable |

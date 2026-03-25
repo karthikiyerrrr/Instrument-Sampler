@@ -16,6 +16,7 @@ alwaysApply: true
 - Milestones 1 and 2 complete: full live pipeline from mic through aubio to virtual MIDI port, with YAML config, extended CLI, and diagnostics monitoring.
 - Milestone 4 (Web UI) complete: FastAPI API layer (`src/api/`) with session management, REST endpoints, and WebSocket MIDI streaming; Next.js 16 frontend (`web/`) with device selector, record controls, and live piano-roll MIDI visualizer.
 - No post-processing dependencies installed (Milestone 3).
+- Milestone 3 architecture: DDSP for timbre cloning (subprocess-isolated Python 3.10 venv), with calibration workflow (guided scale recording + fine-tuning). RAVE removed from the plan.
 
 ## Milestone 1 — Ingestion + Consumers (Tasks 1-5)
 
@@ -35,26 +36,28 @@ alwaysApply: true
 | 7 | Implement config loader and CLI (config.yaml, argparse) | Done |
 | 8 | Implement diagnostics module (queue depths, timing, overflow flags) | Done |
 
-## Milestone 3 — Post-Processing (Tasks 9-11)
+## Milestone 3 — Post-Processing (Tasks 9-13)
 
 | # | Task | Status |
 |---|------|--------|
 | 9  | Implement post-recording transcription (basic-pitch) | Pending |
-| 10 | Implement post-recording timbre cloning (RAVE/DDSP) | Pending |
-| 11 | Integration testing and latency benchmarking | Pending |
+| 10 | Set up DDSP subprocess isolation (Python 3.10 venv, subprocess runner) | Pending |
+| 11 | Implement calibration workflow (CLI + Web UI recording, DDSP fine-tuning) | Pending |
+| 12 | Implement post-recording timbre cloning (DDSP inference via subprocess) | Pending |
+| 13 | Integration testing and latency benchmarking | Pending |
 
-## Milestone 4 — Web UI (Tasks 12-15)
+## Milestone 4 — Web UI (Tasks 14-17)
 
 | # | Task | Status |
 |---|------|--------|
-| 12 | FastAPI API layer with SessionManager, REST routes, WebSocket MIDI stream | Done |
-| 13 | Next.js scaffold with TypeScript, Tailwind, App Router, API proxy | Done |
-| 14 | Frontend components: DeviceSelector, SessionControls, MidiVisualizer, Dashboard | Done |
-| 15 | Wire page.tsx, .gitignore, status.mdc updates | Done |
+| 14 | FastAPI API layer with SessionManager, REST routes, WebSocket MIDI stream | Done |
+| 15 | Next.js scaffold with TypeScript, Tailwind, App Router, API proxy | Done |
+| 16 | Frontend components: DeviceSelector, SessionControls, MidiVisualizer, Dashboard | Done |
+| 17 | Wire page.tsx, .gitignore, status.mdc updates | Done |
 
 ## Completed Milestones
 
-- **Architecture redesign** — two-mode pipeline (live aubio + offline basic-pitch/RAVE).
+- **Architecture redesign** — two-mode pipeline (live aubio + offline basic-pitch/DDSP).
 - **Milestone 1** — Ingestion pipeline with Dispatcher fan-out, aubio live analyzer, WAV recorder.
 - **Milestone 2** — Live MIDI bridge (virtual port via mido), YAML config loader with CLI overrides, diagnostics monitor (queue depths, overflow, aubio latency).
 - **Milestone 4** — Web UI: FastAPI backend (`src/api/`) with session lifecycle, device listing, WebSocket MIDI broadcast; Next.js 16 frontend (`web/`) with device selector, record/stop button, canvas piano-roll visualizer.
@@ -62,4 +65,4 @@ alwaysApply: true
 ## Known Blockers
 
 - **aubio Python 3.11 wheels**: Use `aubio-ledfx` fork (upstream has no 3.11 wheels).
-- **DDSP + Python 3.11**: TF compatibility issues. RAVE is the recommended alternative.
+- **DDSP + Python 3.11**: TF compatibility issues. Resolved via subprocess isolation — DDSP runs in a dedicated Python 3.10 venv (`.venv-ddsp`), invoked as a subprocess from the main 3.11 app.

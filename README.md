@@ -9,7 +9,10 @@ The system operates in two modes: a **live path** for low-latency feedback durin
 ```
 Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI → FL Studio
                                  └─→ [WAV Recorder] → .wav ─┬─→ [Transcription] → .mid → FL Studio
-                                                              └─→ [Timbre Cloning] → .wav → FL Studio
+                                                              └─→ [Timbre Cloning (DDSP)] → .wav → FL Studio
+                                                                        ↑
+                                                           Calibration recording
+                                                         + base model → fine-tuned model
 ```
 
 ### Live Path
@@ -22,10 +25,20 @@ Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI
 
 ### Post-Recording Path *(not yet implemented)*
 
-After a session ends, two offline stages will process the recorded `.wav` file:
+After a session ends, two offline stages process the recorded `.wav` file:
 
 - **Transcription** — Spotify's `basic-pitch` (CNN, ONNX backend) produces a polyphonic `.mid` file with accurate note boundaries, velocities, and pitch bends.
-- **Timbre Cloning** — RAVE (or DDSP as fallback) synthesizes audio that recreates the instrument's acoustic texture, outputting a new `.wav` file.
+- **Timbre Cloning** — Google's DDSP (Differentiable Digital Signal Processing) synthesizes audio that recreates the instrument's acoustic texture, outputting a new `.wav` file. DDSP runs in an isolated Python 3.10 subprocess to avoid TensorFlow version conflicts with the main 3.11 environment.
+
+### Calibration *(not yet implemented)*
+
+Before timbre cloning can match your instrument, you run a one-time **calibration** step:
+
+1. Select a base DDSP model (e.g., violin, flute) or provide your own checkpoint.
+2. Record yourself playing a chromatic scale across your instrument's range (~30 seconds of distinct notes).
+3. The system fine-tunes the base model on your calibration recording, producing a personalized checkpoint.
+
+The fine-tuned model is then used for all subsequent timbre cloning sessions. Calibration is available through both the CLI and the Web UI. Fine-tuning takes approximately 5-15 minutes on CPU; a GPU accelerates this significantly.
 
 ### Web UI
 
@@ -38,7 +51,8 @@ A browser-based dashboard provides an alternative to the CLI:
 
 ### Requirements
 
-- Python 3.11
+- Python 3.11 (live pipeline, API server)
+- Python 3.10 (DDSP timbre cloning — separate venv, see below)
 - macOS (native virtual MIDI) or Windows (with [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
 - Node.js 18+ (for the web UI)
 
@@ -71,7 +85,34 @@ python -m src --midi-port MyPort --blocksize 512
 
 Press **Ctrl+C** to stop. The recorded WAV file is saved to the `recordings/` directory.
 
-### 3. Run the Web UI
+### 3. Set Up the DDSP Environment (Post-Processing)
+
+DDSP requires TensorFlow, which is not compatible with Python 3.11. A separate Python 3.10 venv is used; the main app invokes it as a subprocess for all timbre cloning and calibration tasks.
+
+```bash
+python3.10 -m venv .venv-ddsp
+source .venv-ddsp/bin/activate   # Windows: .venv-ddsp\Scripts\activate
+pip install -r requirements-ddsp.txt
+deactivate
+```
+
+Then set `ddsp_venv_path` in `config.yaml` (or pass `--ddsp-venv .venv-ddsp`) so the main app knows where to find the DDSP interpreter.
+
+### 4. Run Calibration
+
+Calibration fine-tunes a base DDSP model to your instrument. You only need to do this once per instrument.
+
+```bash
+# CLI — guided calibration
+python -m src --calibrate --ddsp-model violin
+
+# Or specify a custom base checkpoint
+python -m src --calibrate --ddsp-model /path/to/custom.ckpt
+```
+
+The Web UI also provides a calibration page with visual guidance and a built-in recorder.
+
+### 5. Run the Web UI
 
 Start the API server and the Next.js frontend in separate terminals:
 
@@ -99,6 +140,9 @@ All settings live in `config.yaml` and can be overridden via CLI arguments:
 | `recording_dir` | `recordings` | Directory for WAV session files |
 | `midi_port_name` | `InstrumentSampler` | Virtual MIDI output port name |
 | `diagnostics_interval_s` | 5.0 | Seconds between diagnostics log lines |
+| `ddsp_venv_path` | `.venv-ddsp` | Path to the Python 3.10 venv containing DDSP |
+| `ddsp_base_model` | `violin` | Pretrained DDSP checkpoint name or file path |
+| `calibration_dir` | `calibrations` | Directory for calibration recordings and fine-tuned models |
 
 CLI arguments take the highest priority, followed by `config.yaml`, then built-in defaults.
 
@@ -118,8 +162,9 @@ src/
 │   └── recorder.py         # WAV file writer consumer
 ├── bridge/
 │   └── midi_sender.py      # mido virtual MIDI port sender
-├── transcription/          # (Milestone 3 — pending)
-├── timbre/                 # (Milestone 3 — pending)
+├── transcription/          # (Milestone 3 — pending) basic-pitch offline transcription
+├── timbre/                 # (Milestone 3 — pending) DDSP subprocess runner + inference
+├── calibration/            # (Milestone 3 — pending) guided scale recording + DDSP fine-tuning
 └── api/
     ├── server.py           # FastAPI app + CORS
     ├── routes.py           # REST endpoints (devices, session)
@@ -142,13 +187,15 @@ web/                        # Next.js 16 frontend
 
 ## Dependencies
 
-Dependencies are split into three files so you only install what you need:
+Dependencies are split by environment so you only install what you need:
 
-| File | Purpose | Key Packages |
-|------|---------|-------------|
-| `requirements.txt` | Live runtime | `sounddevice`, `numpy`, `aubio-ledfx`, `mido`, `python-rtmidi`, `scipy`, `PyYAML`, `fastapi`, `uvicorn` |
-| `requirements-post.txt` | Post-processing | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
-| `requirements-train.txt` | Model training | `acids-rave`, `torch`, `torchaudio` |
+| File | Environment | Purpose | Key Packages |
+|------|-------------|---------|-------------|
+| `requirements.txt` | Main (Python 3.11) | Live runtime + API server | `sounddevice`, `numpy`, `aubio-ledfx`, `mido`, `python-rtmidi`, `scipy`, `PyYAML`, `fastapi`, `uvicorn` |
+| `requirements-post.txt` | Main (Python 3.11) | Offline transcription | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
+| `requirements-ddsp.txt` | DDSP (Python 3.10) | Timbre cloning + calibration | `ddsp`, `tensorflow`, `librosa` |
+
+The DDSP dependencies live in a **separate Python 3.10 venv** (`.venv-ddsp`) because TensorFlow is not compatible with the project's primary Python 3.11 environment. The main app invokes DDSP as a subprocess — no TF import ever happens in the 3.11 process.
 
 ## Project Status
 
@@ -160,12 +207,12 @@ Dependencies are split into three files so you only install what you need:
 
 **In Progress / Pending:**
 
-- **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch`, timbre cloning via RAVE/DDSP, integration testing and latency benchmarking.
+- **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch`; timbre cloning via DDSP (subprocess-isolated Python 3.10 venv); calibration workflow (guided scale recording + model fine-tuning, CLI and Web UI); integration testing and latency benchmarking.
 
 **Known Issues:**
 
 - `aubio` has no official Python 3.11 wheels — use the `aubio-ledfx` fork instead.
-- DDSP has TensorFlow compatibility issues on Python 3.11 — RAVE is the recommended alternative.
+- DDSP requires TensorFlow on Python 3.10 — resolved via a separate `.venv-ddsp` invoked as a subprocess from the main 3.11 app.
 
 ## License
 
