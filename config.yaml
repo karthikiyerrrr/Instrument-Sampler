@@ -1,0 +1,9 @@
+# Instrument-Sampler configuration
+# CLI arguments override values set here.
+
+samplerate_hz: 44100
+channels: 1
+blocksize: 1024
+recording_dir: recordings
+midi_port_name: InstrumentSampler
+diagnostics_interval_s: 5.0

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Recordings and output (user-generated, not tracked)
+recordings/
+output/
+
+# Trained models (too large for git)
+models/*.ts
+models/*.onnx
+models/*.tflite
+models/*.pt
+runs/
+
+# RAVE / DDSP training artifacts
+dataset/
+lightning_logs/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Next.js (web/)
+web/node_modules/
+web/.next/
+web/out/

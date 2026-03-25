@@ -1,0 +1,154 @@
+---
+description: Coding standards for post-recording timbre cloning — RAVE as primary engine, DDSP as fallback, training workflow, model export, and offline inference.
+alwaysApply: false
+globs: ["**/timbre/**", "**/synth/**", "**/rave/**", "**/ddsp/**"]
+---
+
+# Timbre Cloning — Post-Processing Stage
+
+Timbre cloning runs **offline** on the complete recorded WAV file after the live session ends. There is no real-time constraint. The goal is to produce a synthesized audio file that recreates the original instrument's acoustic texture, suitable for import into FL Studio.
+
+---
+
+## Primary: RAVE
+
+### Why RAVE
+
+RAVE (Realtime Audio Variational autoEncoder) by IRCAM is the recommended engine:
+
+- **Actively maintained** — v2.3.1 (December 2023), PyTorch-based.
+- **Fast** — 20x real-time on a standard laptop CPU; ONNX export for lightweight deployment.
+- **Python 3.11 compatible** — requires Python >= 3.9, no TensorFlow dependency.
+- **Native timbre transfer** — the latent-space architecture supports converting one instrument's sound to another.
+- **48 kHz native sample rate** — less resampling friction than DDSP's 16 kHz.
+
+Install: `pip install acids-rave torch torchaudio`
+
+### Training Workflow
+
+Train a RAVE model on 5–10 minutes of varied single-instrument recordings (different dynamics, pitch ranges, articulations).
+
+```bash
+rave train --config violin --db_path ./dataset --name my_instrument --val_every 1000 --n_signal 131072
+```
+
+- `--config` selects a preset architecture. Common choices: `violin`, `vintage`, `noise`, `onnx` (for ONNX-optimized export).
+- `--db_path` points to a directory of `.wav` files (mono, any sample rate — RAVE resamples internally).
+- Training requires a GPU. Target ~1M steps for high-quality timbre reproduction, though ~100k steps often suffices for recognizable timbre.
+
+### Model Export
+
+After training, export to TorchScript (or ONNX with the `onnx` config):
+
+```bash
+rave export --run ./runs/my_instrument/ --streaming
+```
+
+This produces a `.ts` (TorchScript) file that can be loaded without the full RAVE training codebase.
+
+### Offline Inference
+
+Process the complete recorded WAV in a single pass:
+
+```python
+import torch
+import torchaudio
+
+model = torch.jit.load("models/my_instrument.ts")
+model.eval()
+
+audio, sr = torchaudio.load("recordings/session.wav")
+if sr != 48000:
+    audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=48000)
+
+with torch.no_grad():
+    latent = model.encode(audio.unsqueeze(0))
+    reconstructed = model.decode(latent)
+
+reconstructed = reconstructed.squeeze(0)
+if reconstructed.shape[0] == 1:
+    reconstructed = reconstructed.squeeze(0)
+
+torchaudio.save("output/session_timbre.wav", reconstructed.unsqueeze(0), 48000)
+```
+
+If the final output needs to be 44.1 kHz for DAW import, resample after synthesis:
+
+```python
+output_44k = torchaudio.functional.resample(reconstructed, orig_freq=48000, new_freq=44100)
+torchaudio.save("output/session_timbre.wav", output_44k.unsqueeze(0), 44100)
+```
+
+### Model Provisioning
+
+Place trained models in a `models/` directory at the project root. The `config.yaml` should reference the model path:
+
+```yaml
+timbre:
+  engine: rave
+  model_path: models/my_instrument.ts
+```
+
+Consider providing a pre-trained checkpoint for a common instrument (e.g., acoustic guitar) to lower the barrier for new users.
+
+---
+
+## Fallback: DDSP
+
+For users with existing DDSP checkpoints, DDSP remains supported as a fallback.
+
+### Compatibility Warning
+
+DDSP v3.5.1 (last release April 2023) depends on TensorFlow, which has documented Python 3.11 issues:
+
+- Dependency resolver backtracking during `pip install`
+- DLL loading failures on Windows with TF 2.19.0 + Python 3.11
+- Training may produce degenerated results with certain TF/Keras version combinations
+
+Recommendation: isolate DDSP training in a separate virtual environment with pinned versions (`tensorflow==2.12.0`, `keras==2.12.0`) in `requirements-train.txt`.
+
+### Inference Isolation
+
+At inference time, do NOT import `tensorflow`. Instead:
+
+1. During training, export the decoder to TFLite (`tf.lite.TFLiteConverter`) or ONNX (`tf2onnx`).
+2. At inference, load the exported model with `tflite_runtime` or `onnxruntime`.
+3. Implement the harmonic-plus-noise synthesizer in pure NumPy/SciPy — it is straightforward additive synthesis plus filtered noise and does not require the `ddsp` package.
+
+### DDSP Offline Inference
+
+```python
+import onnxruntime as ort
+import numpy as np
+import scipy.signal
+
+session = ort.InferenceSession("models/ddsp_decoder.onnx")
+
+# f0 and loudness extraction (use crepe or another f0 estimator)
+# ... produce f0_hz and loudness_db arrays ...
+
+decoder_output = session.run(None, {"f0": f0_hz, "loudness": loudness_db})
+# ... harmonic + noise synthesis in NumPy ...
+
+audio_44k = scipy.signal.resample_poly(audio_16k, up=441, down=160)
+```
+
+### DDSP Upsampling
+
+DDSP models operate at 16 kHz. Upsample to 44.1 kHz after synthesis:
+
+```python
+import scipy.signal
+audio_44k = scipy.signal.resample_poly(audio_16k, up=441, down=160)
+```
+
+Use `scipy.signal.resample_poly` for efficient polyphase resampling.
+
+---
+
+## Anti-Patterns
+
+- **Running `import tensorflow` at inference time** — adds seconds to startup and hundreds of MB of memory. Use only exported models.
+- **Training on less than 3 minutes of audio** — underfits the timbre; aim for 5–10 minutes of varied dynamics and pitch range.
+- **Attempting real-time frame-by-frame inference** — timbre cloning is an offline post-processing step. Process the full file in one pass.
+- **Mixing RAVE and DDSP dependencies in the same environment** — PyTorch and TensorFlow conflict on GPU memory and sometimes on numpy/protobuf versions. Use separate requirement files.

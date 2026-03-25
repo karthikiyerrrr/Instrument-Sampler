@@ -1,0 +1,132 @@
+---
+description: Coding standards for the bridge stage — live MIDI output via mido virtual port from aubio, MIDI file export from basic-pitch, FL Studio integration, and future audio routing guidance.
+alwaysApply: false
+globs: ["**/bridge/**", "**/routing/**", "**/midi/**", "**/vst/**"]
+---
+
+# MIDI & Audio Routing — Bridge Stage
+
+The bridge has two roles: sending live MIDI from the aubio analyzer during a session, and exporting files from the post-processing pipeline for FL Studio import.
+
+---
+
+## Live MIDI Output
+
+### Preferred Library
+
+Use `mido` with the `python-rtmidi` backend (the default and recommended backend).
+
+Install: `pip install mido python-rtmidi`
+
+Pre-compiled wheels for `python-rtmidi` are available for Python 3.11 on macOS (Intel + Apple Silicon) and Windows (x86_64). Users on other platforms will need a C++ compiler.
+
+### Virtual MIDI Port
+
+Open a named virtual output port that FL Studio (or any DAW) can discover:
+
+```python
+import mido
+
+port = mido.open_output("InstrumentSampler", virtual=True)
+```
+
+- **macOS / Linux**: Virtual ports work natively via CoreMIDI / ALSA.
+- **Windows**: Virtual ports are NOT supported by RtMidi. Users must install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and create a port named `InstrumentSampler`. Then open it by name: `mido.open_output("InstrumentSampler")` (without `virtual=True`).
+
+### Message Dispatch
+
+The live MIDI sender runs in a **dedicated thread** that consumes from a `queue.Queue` fed by the aubio live analyzer:
+
+```python
+import threading
+import queue
+import mido
+
+midi_queue: queue.Queue[mido.Message] = queue.Queue(maxsize=256)
+
+def midi_sender(
+    port: mido.ports.BaseOutput,
+    q: queue.Queue[mido.Message],
+) -> None:
+    while True:
+        msg = q.get()
+        if msg is None:
+            break
+        port.send(msg)
+
+thread = threading.Thread(target=midi_sender, args=(port, midi_queue), daemon=True)
+thread.start()
+```
+
+Send each MIDI event individually as soon as it is available. Never batch messages.
+
+### Live Message Types
+
+In the live path, aubio produces onset + pitch events. The message set is intentionally simple:
+
+| Event | mido Message | Notes |
+|---|---|---|
+| Note start | `note_on(note, velocity, channel)` | Velocity is fixed (100) or derived from RMS loudness |
+| Note end | `note_off(note, velocity=0, channel)` | Sent before each new onset and on shutdown |
+
+Pitch bend and expression CC are not emitted in the live path — aubio quantizes to the nearest MIDI note. Sub-semitone detail and dynamics are captured by the post-recording basic-pitch transcription.
+
+### FL Studio Configuration (Live MIDI)
+
+1. Open FL Studio → Options → MIDI Settings.
+2. Under "Input", find the `InstrumentSampler` port and enable it.
+3. Assign it to a port number (e.g., Port 1).
+4. In the Channel Rack, set the target instrument's MIDI input to the matching port.
+
+---
+
+## Post-Processing: MIDI File Export
+
+After a recording session, `basic-pitch` produces a `pretty_midi.PrettyMIDI` object. Write it to a `.mid` file for FL Studio import:
+
+```python
+from basic_pitch.inference import predict
+from basic_pitch import ICASSP_2022_MODEL_PATH
+
+_, midi_data, _ = predict(
+    audio_path="recordings/session.wav",
+    model_or_model_path=ICASSP_2022_MODEL_PATH,
+)
+midi_data.write("output/session.mid")
+```
+
+This file contains full polyphonic note data with pitch bends and velocities — far richer than the live monophonic stream.
+
+### FL Studio Configuration (MIDI File Import)
+
+Drag the `.mid` file into the FL Studio playlist or use File → Import → MIDI file. FL Studio creates a piano roll pattern from the imported data.
+
+---
+
+## Post-Processing: Audio File Export
+
+The timbre cloning stage (RAVE or DDSP) writes a `.wav` file. No virtual audio cable routing is needed — the user imports the file into FL Studio's playlist or Edison.
+
+Virtual audio cable routing (BlackHole on macOS, VB-Cable on Windows) remains a **future stretch goal** for when live timbre cloning is added.
+
+---
+
+## VST3 Plugin (Stretch Goal)
+
+For lowest latency and tightest DAW integration, a future version could wrap the inference model in a VST3 plugin:
+
+- Use **JUCE** (C++ framework) for the plugin shell.
+- Embed the ONNX or TorchScript model via C++ runtime bindings.
+- The plugin receives audio input from the DAW, runs inference, and outputs synthesized audio within the DAW's audio thread.
+
+This depends on live timbre cloning being re-enabled and is not in the current scope.
+
+---
+
+## Anti-Patterns
+
+- **Sending MIDI from the audio callback thread** — RtMidi calls may block; always use a separate sender thread.
+- **Batching MIDI messages** — introduces artificial latency; send each event as it becomes available.
+- **Hardcoding MIDI port names** — enumerate ports with `mido.get_output_names()` and let the user choose, with `InstrumentSampler` as the default.
+- **Ignoring Windows virtual port limitations** — always check `sys.platform` and provide loopMIDI setup instructions on Windows.
+- **Using blocking `sd.OutputStream.write()` for audio output** — if live audio routing is added in the future, use a callback-based `sd.OutputStream` with a ring buffer, not the blocking write API.

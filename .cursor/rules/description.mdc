@@ -1,0 +1,63 @@
+---
+description: High-level technical specification for the Instrument-Sampler project — two-mode pipeline architecture, data flow, key libraries, and system constraints.
+alwaysApply: true
+---
+
+# Instrument-Sampler — Technical Specification
+
+## Purpose
+
+Application that captures live audio from an acoustic instrument, provides real-time monophonic MIDI feedback to the performer, records the session, and then produces full polyphonic MIDI transcription and timbre-cloned audio as post-processing outputs — all routed into FL Studio.
+
+## Pipeline Architecture
+
+The system operates in two modes: a **live path** for low-latency feedback during performance, and a **post-recording path** for high-quality offline processing.
+
+```
+Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI → FL Studio (virtual MIDI port)
+                                 └─→ [WAV Recorder] → .wav file ─┬─→ [Transcription (basic-pitch)] → .mid file → FL Studio (import)
+                                                                   └─→ [Timbre Cloning (RAVE/DDSP)] → .wav file → FL Studio (import)
+```
+
+### Stage 1 — Ingestion
+
+Stream real-time audio buffers from the system input device using `sounddevice` (PortAudio). Callback-based `sd.InputStream` feeds an explicit `Dispatcher` that fans out each audio frame to all subscribed consumer queues. Target: 44100 Hz, float32, mono.
+
+### Stage 2 — Live Analysis
+
+`aubio` performs real-time onset detection and monophonic YIN pitch tracking on each audio frame as it arrives from the dispatcher. Detected onsets immediately emit `mido.Message` objects to the virtual MIDI port. This path is monophonic and approximate — its purpose is performer feedback, not archival transcription.
+
+### Stage 3 — Recording
+
+A WAV recorder consumer subscribes to the dispatcher and writes every audio frame to a `.wav` file on disk. This recorded file is the input for both post-processing stages.
+
+### Stage 4 — Post-Processing: Transcription
+
+After recording completes, Spotify `basic-pitch` (CNN, ONNX backend) runs on the full `.wav` file via its standard `predict()` API. It produces a polyphonic MIDI file with accurate note boundaries, velocities, and pitch bends. No streaming hacks or chunk stitching required.
+
+### Stage 5 — Post-Processing: Timbre Cloning
+
+After recording completes, **RAVE** (primary) or **DDSP** (fallback) processes the full `.wav` file to synthesize audio that recreates the instrument's acoustic texture. Output is a `.wav` file at 44.1 kHz.
+
+### Stage 6 — The Bridge
+
+- **Live MIDI routing**: `mido` with `python-rtmidi` backend opens a virtual MIDI output port fed by the live aubio analyzer. FL Studio reads from this port in real time. On Windows, `loopMIDI` provides the virtual port.
+- **Post-processing file export**: The transcription stage writes a `.mid` file and the timbre cloning stage writes a `.wav` file. Both are imported into FL Studio after the session.
+
+## Dependencies (Split by Mode)
+
+| Group | File | Packages |
+|---|---|---|
+| Live runtime | `requirements.txt` | `sounddevice`, `numpy`, `aubio` (or `aubio-ledfx`), `mido`, `python-rtmidi`, `scipy` |
+| Post-processing | `requirements-post.txt` | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
+| Model training | `requirements-train.txt` | `acids-rave`, `torch`, `torchaudio` (or `ddsp`, `tensorflow` for DDSP fallback) |
+
+## Key Constraints
+
+| Constraint | Value |
+|---|---|
+| Python version | 3.11 |
+| Live-path latency | < 50 ms end-to-end (ingestion → aubio → MIDI send) |
+| Post-processing latency | Offline; no real-time constraint |
+| Architecture | Live path is streaming-first; post-processing operates on complete files |
+| Primary OS | macOS (native virtual MIDI, BlackHole for future live audio); Windows via loopMIDI + VB-Cable |

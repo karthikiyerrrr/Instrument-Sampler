@@ -1,0 +1,65 @@
+---
+description: Live project status tracker — completed milestones, pending tasks, and known blockers. Must be updated after every task completion or state change.
+alwaysApply: true
+---
+
+**PERMANENT DIRECTIVE: This file (`status.mdc`) MUST be updated immediately whenever a task is completed, a new milestone is reached, or a technical blocker is encountered. No exceptions.**
+
+**README DIRECTIVE: Whenever `status.mdc` is updated, review `README.md` (project root) and update its "Project Status", "Known Issues", and any other sections affected by the change so the README always reflects the current state of the project.**
+
+---
+
+## Current Project State
+
+- Python 3.11 virtual environment (`.venv`) active with live-path dependencies installed.
+- `src/` package scaffolded with ingestion, live analysis, recording, and bridge modules.
+- Milestones 1 and 2 complete: full live pipeline from mic through aubio to virtual MIDI port, with YAML config, extended CLI, and diagnostics monitoring.
+- Milestone 4 (Web UI) complete: FastAPI API layer (`src/api/`) with session management, REST endpoints, and WebSocket MIDI streaming; Next.js 16 frontend (`web/`) with device selector, record controls, and live piano-roll MIDI visualizer.
+- No post-processing dependencies installed (Milestone 3).
+
+## Milestone 1 — Ingestion + Consumers (Tasks 1-5)
+
+| # | Task | Status |
+|---|------|--------|
+| 1 | Install core dependencies (`requirements.txt`) | Done |
+| 2 | Scaffold project structure (`src/` package) | Done |
+| 3 | Implement Dispatcher + ingestion stream | Done |
+| 4 | Implement live aubio onset+pitch analyzer | Done |
+| 5 | Implement WAV recorder consumer | Done |
+
+## Milestone 2 — Live MIDI + Polish (Tasks 6-8)
+
+| # | Task | Status |
+|---|------|--------|
+| 6 | Implement live MIDI bridge (mido virtual port) | Done |
+| 7 | Implement config loader and CLI (config.yaml, argparse) | Done |
+| 8 | Implement diagnostics module (queue depths, timing, overflow flags) | Done |
+
+## Milestone 3 — Post-Processing (Tasks 9-11)
+
+| # | Task | Status |
+|---|------|--------|
+| 9  | Implement post-recording transcription (basic-pitch) | Pending |
+| 10 | Implement post-recording timbre cloning (RAVE/DDSP) | Pending |
+| 11 | Integration testing and latency benchmarking | Pending |
+
+## Milestone 4 — Web UI (Tasks 12-15)
+
+| # | Task | Status |
+|---|------|--------|
+| 12 | FastAPI API layer with SessionManager, REST routes, WebSocket MIDI stream | Done |
+| 13 | Next.js scaffold with TypeScript, Tailwind, App Router, API proxy | Done |
+| 14 | Frontend components: DeviceSelector, SessionControls, MidiVisualizer, Dashboard | Done |
+| 15 | Wire page.tsx, .gitignore, status.mdc updates | Done |
+
+## Completed Milestones
+
+- **Architecture redesign** — two-mode pipeline (live aubio + offline basic-pitch/RAVE).
+- **Milestone 1** — Ingestion pipeline with Dispatcher fan-out, aubio live analyzer, WAV recorder.
+- **Milestone 2** — Live MIDI bridge (virtual port via mido), YAML config loader with CLI overrides, diagnostics monitor (queue depths, overflow, aubio latency).
+- **Milestone 4** — Web UI: FastAPI backend (`src/api/`) with session lifecycle, device listing, WebSocket MIDI broadcast; Next.js 16 frontend (`web/`) with device selector, record/stop button, canvas piano-roll visualizer.
+
+## Known Blockers
+
+- **aubio Python 3.11 wheels**: Use `aubio-ledfx` fork (upstream has no 3.11 wheels).
+- **DDSP + Python 3.11**: TF compatibility issues. RAVE is the recommended alternative.

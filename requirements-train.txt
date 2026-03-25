@@ -1,0 +1,4 @@
+# Model training dependencies (Milestone 3)
+# acids-rave
+# torch
+# torchaudio

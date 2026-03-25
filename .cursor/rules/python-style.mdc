@@ -1,0 +1,23 @@
+---
+description: Rules for Python code style and documentation to ensure maintainability of the Instrument-Sampler pipeline.
+alwaysApply: true
+globs: ["**/*.py"]
+---
+
+# Code Formatting Standards
+
+## 1. Documentation (Google Style)
+- All functions, classes, and modules must include Google-style docstrings.
+- Include 'Args:', 'Returns:', and 'Raises:' sections where applicable.
+
+## 2. Type Hinting
+- Every function signature must be fully type-hinted.
+- Use `np.ndarray` for audio buffers to maintain clarity in data processing.
+
+## 3. Structure & Naming
+- Follow PEP 8: `snake_case` for functions/variables, `PascalCase` for classes.
+- Keep functions modular (aim for < 50 lines).
+- Use absolute imports over relative imports.
+
+## 4. Audio-Specific Rules
+- Always specify units in variable names when dealing with time or frequency (e.g., `buffer_ms`, `pitch_hz`).

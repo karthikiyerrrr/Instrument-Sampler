@@ -1,0 +1,151 @@
+---
+description: Coding standards for pitch and onset detection — live aubio analysis for real-time MIDI feedback and offline basic-pitch transcription for polyphonic MIDI export.
+alwaysApply: false
+globs: ["**/live/**", "**/transcription/**", "**/midi/**", "**/pitch/**"]
+---
+
+# Pitch & Onset Detection
+
+This module covers two distinct paths with different latency profiles and accuracy trade-offs.
+
+---
+
+## Part A — Live Onset + Pitch (aubio)
+
+### Preferred Library
+
+Use `aubio` for real-time onset detection and monophonic pitch tracking. It is written in C with thin Python/NumPy bindings and adds negligible overhead.
+
+Install: `pip install aubio` (conda-forge), or `pip install aubio-ledfx` for pre-built Python 3.11+ wheels.
+
+### Initialization
+
+```python
+import aubio
+
+SAMPLERATE_HZ = 44100
+BUF_SIZE = 512
+HOP_SIZE = 256
+
+onset_detector = aubio.onset("default", buf_size=BUF_SIZE, hop_size=HOP_SIZE, samplerate=SAMPLERATE_HZ)
+pitch_detector = aubio.pitch("yin", buf_size=2048, hop_size=HOP_SIZE, samplerate=SAMPLERATE_HZ)
+pitch_detector.set_unit("midi")
+pitch_detector.set_tolerance(0.8)
+```
+
+- `onset("default")` uses the HFC (High-Frequency Content) method — fast and reliable for percussive and harmonic onsets.
+- `pitch("yin")` tracks monophonic fundamental frequency via the YIN algorithm. Setting the unit to `"midi"` returns MIDI note numbers directly.
+- `set_tolerance` controls confidence threshold; 0.8 is a reasonable default. Lower values reject more uncertain estimates.
+
+### Consumer Thread
+
+The live analyzer runs in a dedicated thread that reads from the dispatcher queue. It feeds hop-sized chunks to aubio and emits `mido.Message` objects when onsets are detected.
+
+```python
+import queue
+import numpy as np
+import mido
+
+def live_analyzer(
+    audio_queue: queue.Queue[np.ndarray],
+    midi_queue: queue.Queue[mido.Message],
+    samplerate_hz: int = 44100,
+) -> None:
+    hop_size = 256
+    onset_det = aubio.onset("default", buf_size=512, hop_size=hop_size, samplerate=samplerate_hz)
+    pitch_det = aubio.pitch("yin", buf_size=2048, hop_size=hop_size, samplerate=samplerate_hz)
+    pitch_det.set_unit("midi")
+    pitch_det.set_tolerance(0.8)
+
+    buffer = np.empty(0, dtype=np.float32)
+    current_note: int | None = None
+
+    while True:
+        frame = audio_queue.get()
+        if frame is None:
+            break
+        buffer = np.append(buffer, frame.flatten())
+
+        while len(buffer) >= hop_size:
+            hop = buffer[:hop_size].astype(np.float32)
+            buffer = buffer[hop_size:]
+
+            is_onset = onset_det(hop)
+            midi_pitch = int(round(pitch_det(hop)[0]))
+
+            if is_onset and midi_pitch > 0:
+                if current_note is not None:
+                    midi_queue.put_nowait(mido.Message("note_off", note=current_note, velocity=0, channel=0))
+                current_note = midi_pitch
+                midi_queue.put_nowait(mido.Message("note_on", note=current_note, velocity=100, channel=0))
+
+    if current_note is not None:
+        midi_queue.put_nowait(mido.Message("note_off", note=current_note, velocity=0, channel=0))
+```
+
+### Latency Budget
+
+| Segment | Target |
+|---|---|
+| PortAudio callback → dispatcher queue | < 25 ms |
+| aubio onset + pitch per hop | < 1 ms (pure C, trivial at 256 samples) |
+| MIDI queue → port send | < 1 ms |
+| **Total live path** | **< 30 ms** |
+
+### Limitations
+
+- **Monophonic only.** aubio's pitch tracker returns a single f0 per hop. Chords will produce the dominant fundamental, not individual notes. This is acceptable for live performer feedback.
+- **No velocity dynamics.** Onset detection is binary; the example above uses a fixed velocity of 100. A loudness estimator (RMS of the hop) can map to velocity for more expression.
+- **No pitch bends.** The live path quantizes to the nearest MIDI note. Sub-semitone detail is captured by the post-recording transcription path.
+
+### Anti-Patterns
+
+- **Running aubio inside the audio callback** — aubio calls are fast but unpredictable at the microsecond level; always run in a consumer thread.
+- **Using large buffer sizes** (e.g., 4096+) — adds tens of milliseconds of latency with no accuracy benefit for onset detection.
+- **Ignoring `pitch_detector.get_confidence()`** — low-confidence pitches (< 0.5) should be discarded to avoid phantom notes.
+- **Forgetting to send `note_off`** — every `note_on` must be balanced by a `note_off` before the next onset or on shutdown.
+
+---
+
+## Part B — Post-Recording Transcription (basic-pitch)
+
+### Preferred Library
+
+Use `basic-pitch` by Spotify with the **ONNX backend** for polyphonic transcription of the complete recorded WAV file.
+
+Install: `pip install "basic-pitch[onnx]"`
+
+### Usage
+
+basic-pitch is designed for offline whole-file processing. Since the recording is complete before this stage runs, use the standard high-level API:
+
+```python
+from basic_pitch.inference import predict
+from basic_pitch import ICASSP_2022_MODEL_PATH
+
+model_output, midi_data, note_events = predict(
+    audio_path="recordings/session.wav",
+    model_or_model_path=ICASSP_2022_MODEL_PATH,
+)
+
+midi_data.write("output/session.mid")
+```
+
+`predict()` handles resampling (44.1 kHz → 22050 Hz), windowing, inference, and note extraction internally. Do NOT reimplement these steps manually.
+
+### Output
+
+`midi_data` is a `pretty_midi.PrettyMIDI` object. It can be saved directly as a `.mid` file and imported into FL Studio. The output includes:
+
+- Polyphonic note events with onset/offset times, pitches, and velocities
+- Pitch bend data for sub-semitone accuracy
+
+### Performance
+
+basic-pitch runs at ~3x real-time on CPU with the ONNX backend. A 60-second recording processes in ~20 seconds. There is no real-time constraint since this runs after the session.
+
+### Anti-Patterns
+
+- **Loading TensorFlow** when ONNX is available — adds ~500 MB memory overhead and slower startup. Install with `[onnx]` extra.
+- **Manually chunking audio and stitching results** — unnecessary complexity now that inference is offline. Let `predict()` handle the full file.
+- **Running post-processing on the main/audio thread** — run in a background thread or subprocess to keep the UI responsive.

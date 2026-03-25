@@ -1,0 +1,4 @@
+# Post-processing dependencies (Milestone 3)
+# basic-pitch[onnx]
+# onnxruntime
+# librosa
