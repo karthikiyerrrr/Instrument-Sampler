@@ -1,1 +1,27 @@
-@AGENTS.md
+# web/ — Frontend Rules
+
+> This is NOT the Next.js you know. This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+
+---
+
+## Server vs. Client Components (App Router)
+
+- **Default to Server Components:** All files in `web/app/` are Server Components by default. Keep them that way to handle initial data fetching (e.g., listing past recordings) without sending unnecessary JavaScript to the browser.
+- **Isolate Interactivity:** Only use the `"use client"` directive at the absolute top of a file when you need React hooks (`useState`, `useEffect`), browser APIs (Web Audio API), or WebSockets.
+- **Push Client Components Down:** Keep client components as leaves in your component tree. For example, `web/app/session/page.tsx` can be a Server Component that imports a `<SessionControls />` Client Component.
+
+## API & WebSocket Integration
+
+- **Strict Typing:** All interactions with the FastAPI backend must be typed. Define TypeScript interfaces for your expected JSON payloads in `web/lib/api.ts`.
+- **Real-Time Data (WebSockets):** Components like `AudioMeter.tsx` and `PitchDisplay.tsx` that rely on the `api/websocket.py` stream must handle their own connection lifecycle. Always ensure WebSocket connections are closed cleanly in a `useEffect` cleanup function to prevent memory leaks when navigating away from the session page.
+- **REST Fetching:** Use standard `fetch` within Server Components for initial static data. For dynamic client-side fetching (like updating a config), abstract the fetch logic into `web/lib/api.ts`.
+
+## State Management
+
+- Avoid heavy global state libraries (like Redux) unless strictly necessary. Use standard React state for component-level UI toggles.
+- For shared live data (e.g., the current session state or active instrument config), consider React Context wrapping only the specific interactive sub-trees, rather than the whole app.
+
+## Styling & UI
+
+- **Tailwind CSS:** Use Tailwind utility classes for all styling. Avoid creating custom `.css` files unless overriding a complex third-party component.
+- **Responsive Design:** Ensure dashboards and diagnostic panels use flexbox/grid to scale cleanly, as audio routing configurations can take up significant screen real estate.
