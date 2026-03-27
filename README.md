@@ -1,6 +1,6 @@
 # Instrument-Sampler
 
-Capture live audio from an acoustic instrument, get real-time monophonic MIDI feedback, record the session, and produce instrument-group-specific preprocessing, transcription, and timbre-cloned synthesis — all routable into FL Studio.
+Capture live audio from an acoustic instrument, get real-time MIDI feedback, record the session, then classify the instrument into one of three groups and apply group-specific preprocessing, transcription (monophonic, polyphonic, or percussion onset), and timbre-cloned synthesis — all routable into FL Studio.
 
 ## How It Works
 
@@ -155,13 +155,6 @@ src/
 │   └── recorder.py         # WAV file writer consumer
 ├── bridge/
 │   └── midi_sender.py      # mido virtual MIDI port sender
-├── preprocessing/
-│   ├── classifier.py       # Instrument group selection (config or auto-detect)
-│   ├── pipeline.py         # Group-specific preprocessing orchestration
-│   ├── wiener.py           # Wiener filtering (standard + transient-preserving)
-│   ├── dereverb.py         # 1D U-Net de-reverberation (Group 1)
-│   ├── hpss.py             # Harmonic-Percussive Source Separation (Group 2)
-│   └── spectral_gate.py    # Spectral gating (Group 3)
 ├── transcription/
 │   └── transcriber.py      # basic-pitch polyphonic MIDI transcription
 └── api/
@@ -170,7 +163,15 @@ src/
     ├── session.py          # SessionManager lifecycle
     └── websocket.py        # WebSocket MIDI broadcast
 
+models/
+└── ddsp_pretrained/            # Pre-trained DDSP checkpoints
+    ├── violin/                 # Violin model (ckpt-40000)
+    └── tenor_saxophone/        # Tenor sax model (ckpt-20000)
+
 notebooks/                      # Standalone testing notebooks
+├── shared/
+│   ├── ddsp.py                 # DDSP model utilities (loading, training, inference)
+│   └── transcription.py        # basic-pitch integration helpers
 ├── preprocessing/
 │   └── group1_ddsp_preprocess.ipynb
 ├── transcription/
@@ -201,11 +202,11 @@ Dependencies are split by environment so you only install what you need:
 |------|-------------|---------|-------------|
 | `requirements.txt` | Main (Python 3.11) | Live runtime + API server | `sounddevice`, `numpy`, `aubio-ledfx`, `mido`, `python-rtmidi`, `scipy`, `PyYAML`, `fastapi`, `uvicorn` |
 | `requirements-post.txt` | Main (Python 3.11) | Offline transcription | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
-| `requirements-ddsp.txt` | Notebooks (Python 3.11) | DDSP timbre cloning (Group 1) | `tensorflow`, `torchcrepe`, `gin-config`, `ddsp` (no-deps) |
-| `requirements-preprocess.txt` | Main (Python 3.11) | Preprocessing | `noisereduce`, `scipy`, `torch`, `librosa` |
-| `requirements-synth.txt` | Main (Python 3.11) | Synthesis (Groups 2+3) | `torch`, `torchaudio` |
+| `requirements-ddsp.txt` | Notebooks (Python 3.11) | DDSP timbre cloning (Group 1) | `tensorflow`, `tensorflow-probability`, `torchcrepe`, `gin-config`, `ddsp` (no-deps) |
+| `requirements-preprocess.txt` | Planned | Group-specific preprocessing | `noisereduce`, `scipy`, `torch`, `librosa` |
+| `requirements-synth.txt` | Planned | Synthesis (Groups 2+3) | `torch`, `torchaudio` |
 
-All app dependencies run in a single Python 3.11 venv. DDSP dependencies are separate (`requirements-ddsp.txt`) and only needed for the synthesis notebooks.
+All app dependencies run in a single Python 3.11 venv. DDSP dependencies are separate (`requirements-ddsp.txt`) and only needed for the synthesis notebooks. The preprocessing and synthesis requirements files will be created when Milestone 5 implementation begins.
 
 ## Project Status
 
@@ -213,19 +214,24 @@ All app dependencies run in a single Python 3.11 venv. DDSP dependencies are sep
 
 - **Milestone 1** — Ingestion pipeline with Dispatcher fan-out, aubio live analyzer, WAV recorder.
 - **Milestone 2** — Live MIDI bridge (virtual port via mido), YAML config loader with CLI overrides, diagnostics monitor.
-- **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch` (ONNX). DDSP timbre cloning pipeline (calibration, fine-tuning, inference) moved to standalone Jupyter notebooks under `notebooks/` for testing.
+- **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch` (ONNX). DDSP timbre cloning pipeline (calibration, fine-tuning, inference) moved to standalone Jupyter notebooks under `notebooks/` for testing. Pre-trained DDSP checkpoints available for violin and tenor saxophone.
 - **Milestone 4** — Web UI: FastAPI backend with session lifecycle, device listing, WebSocket MIDI broadcast; Next.js 16 frontend with device selector, record/stop controls, and canvas piano-roll visualizer.
+
+**In Progress:**
+
+- **Notebook testing** — Group 1 DDSP pipeline (preprocessing, transcription, fine-tuning, inference) testing in progress via `notebooks/`. Shared utilities (`notebooks/shared/ddsp.py`, `notebooks/shared/transcription.py`) support the notebook workflows. Groups 2 and 3 notebook pipelines pending.
 
 **Pending** (tracked in directory-specific `CLAUDE.md` files):
 
 - Integration testing and latency benchmarking (Task 13) — see `src/CLAUDE.md`.
-- **Milestone 5** — Preprocessing & Multi-Pipeline: instrument group classifier, group-specific preprocessing, onset-only transcription (Group 3), Karplus-Strong synthesis (Group 2), WaveNet/NSynth synthesis (Group 3), `instrument_group` config — see `src/CLAUDE.md`.
-- **Notebook testing** — Group 1 DDSP pipeline testing in progress; Group 2 and Group 3 pipelines pending — see `notebooks/CLAUDE.md`.
+- **Milestone 5** — Preprocessing & Multi-Pipeline: instrument group classifier, group-specific preprocessing (`src/preprocessing/` — not yet implemented), onset-only transcription (Group 3), Karplus-Strong synthesis (Group 2), WaveNet/NSynth synthesis (Group 3), `instrument_group` config setting — see `src/CLAUDE.md`.
 
 **Known Issues:**
 
 - `aubio` has no official Python 3.11 wheels — use the `aubio-ledfx` fork instead.
 - WaveNet/NSynth (Group 3) training requires GPU and a dataset of ≥500 isolated drum hits per class.
+- `src/preprocessing/` directory does not exist yet — will be created as part of Milestone 5.
+- `requirements-preprocess.txt` and `requirements-synth.txt` do not exist yet — will be created when Milestone 5 implementation begins.
 
 ## License
 
