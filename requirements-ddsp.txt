@@ -1,7 +1,10 @@
 # DDSP timbre-cloning dependencies (Python 3.10 — install into .venv-ddsp)
-ddsp==1.9.0
-tensorflow==2.12.0
+# DDSP timbre-cloning dependencies (Python 3.11 — install into .venv-ddsp)
+# The ddsp package itself is NOT listed here: it has incompatible transitive
+# deps on modern Python. We implement the synthesis math directly in TF.
+tensorflow==2.13.0
 librosa
 onnx
+onnxruntime
 tf2onnx
 scipy

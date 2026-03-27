@@ -1,17 +1,17 @@
-"""DDSP timbre-cloning inference — runs inside the Python 3.10 .venv-ddsp subprocess.
+"""DDSP timbre-cloning inference — runs inside the .venv-ddsp subprocess.
 
-Loads the ONNX decoder exported by train.py and synthesises a new audio file
-whose timbre matches the trained instrument.  TensorFlow is NOT imported here;
-all synthesis runs via onnxruntime.
+Loads the ONNX decoder exported by train.py, synthesises a new audio file
+whose timbre matches the trained instrument.  TensorFlow is NOT imported;
+all synthesis runs via onnxruntime + numpy.
 
 Usage:
     python ddsp_worker/infer.py \
-        --wav  recordings/session_20260327_120000.wav \
+        --wav  recordings/session.wav \
         --model models/my_instrument \
-        --out   recordings/session_20260327_120000_cloned.wav
+        --out   recordings/session_cloned.wav
 
-Outputs:
-    <out>   — 44.1 kHz 16-bit PCM WAV (upsampled from DDSP's 16 kHz output).
+The ONNX decoder outputs synthesis parameters (amps, harm_dist, noise_mags);
+the harmonic + noise synthesis is performed here in pure numpy.
 """
 
 import argparse
@@ -33,109 +33,174 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_DDSP_SR: int = 16_000    # DDSP native sample rate
-_OUTPUT_SR: int = 44_100  # DAW / FL Studio target sample rate
-_FRAME_RATE: int = 250    # Must match what was used during training
+SAMPLE_RATE: int = 16_000
+OUTPUT_SR: int = 44_100
+FRAME_RATE: int = 250
+HOP_SAMPLES: int = SAMPLE_RATE // FRAME_RATE
+N_HARMONICS: int = 60
+N_NOISE_BANDS: int = 65
 
 
-def _load_audio(wav_path: str, sr: int) -> np.ndarray:
-    """Load WAV and resample to *sr* Hz, returning mono float32."""
-    audio, _ = librosa.load(wav_path, sr=sr, mono=True)
-    logger.info("Loaded %s — %.1f s @ %d Hz", wav_path, len(audio) / sr, sr)
+# ---------------------------------------------------------------------------
+# Feature extraction (mirrors normalisation in train.py)
+# ---------------------------------------------------------------------------
+
+def _load_audio(wav_path: str) -> np.ndarray:
+    """Load WAV at SAMPLE_RATE Hz mono float32."""
+    audio, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
+    logger.info("Loaded %s — %.1f s @ %d Hz", wav_path, len(audio) / SAMPLE_RATE, SAMPLE_RATE)
     return audio.astype(np.float32)
 
 
-def _compute_features(
-    audio: np.ndarray, frame_rate: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract F0 (Hz) and loudness (dB) without importing TensorFlow.
-
-    Uses ``librosa`` for a lightweight pitch/loudness estimate compatible
-    with ONNX decoder inputs.
+def _compute_features(audio: np.ndarray, frame_rate: int) -> np.ndarray:
+    """Compute normalised features [n_frames, 2] matching train.py.
 
     Args:
-        audio: Mono float32 audio at _DDSP_SR.
-        frame_rate: Feature frames per second.
+        audio: Mono float32 audio at SAMPLE_RATE.
+        frame_rate: Feature frame rate (must match training).
 
     Returns:
-        Tuple of (f0_hz, loudness_db), each shape [1, n_frames, 1].
+        features: float32 [n_frames, 2] — (f0_norm, loudness_norm).
     """
-    hop_length = _DDSP_SR // frame_rate  # e.g. 64 samples @ 250 fps
-
-    # Fundamental frequency via PYIN (probabilistic YIN).
-    f0, voiced_flag, _ = librosa.pyin(
+    hop = SAMPLE_RATE // frame_rate
+    f0, _voiced, _ = librosa.pyin(
         audio,
-        fmin=librosa.note_to_hz("C2"),
-        fmax=librosa.note_to_hz("C7"),
-        sr=_DDSP_SR,
-        hop_length=hop_length,
+        fmin=float(librosa.note_to_hz("C2")),
+        fmax=float(librosa.note_to_hz("C7")),
+        sr=SAMPLE_RATE,
+        hop_length=hop,
     )
     f0 = np.nan_to_num(f0, nan=0.0).astype(np.float32)
-
-    # Loudness: A-weighted RMS in dB.
-    rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
+    rms = librosa.feature.rms(y=audio, hop_length=hop)[0].astype(np.float32)
     loudness_db = librosa.amplitude_to_db(rms, ref=1.0).astype(np.float32)
+    n = min(len(f0), len(loudness_db))
+    f0_norm = np.clip(f0[:n] / 2000.0, 0.0, 1.0)
+    loud_norm = np.clip((loudness_db[:n] + 120.0) / 120.0, 0.0, 1.0)
+    return np.stack([f0_norm, loud_norm], axis=-1).astype(np.float32)
 
-    n_frames = min(len(f0), len(loudness_db))
-    f0_hz = f0[:n_frames][np.newaxis, :, np.newaxis]         # [1, T, 1]
-    loudness_db = loudness_db[:n_frames][np.newaxis, :, np.newaxis]  # [1, T, 1]
-    return f0_hz, loudness_db
+
+# ---------------------------------------------------------------------------
+# Numpy synthesis (mirrors _synthesize() in train.py but runs without TF)
+# ---------------------------------------------------------------------------
+
+def _upsample_1d(x: np.ndarray, n_out: int) -> np.ndarray:
+    """Linear interpolation from n_frames → n_out samples."""
+    n_in = len(x)
+    t_in = np.linspace(0.0, 1.0, n_in)
+    t_out = np.linspace(0.0, 1.0, n_out)
+    return np.interp(t_out, t_in, x).astype(np.float32)
 
 
-def _run_decoder(
-    session: ort.InferenceSession, f0_hz: np.ndarray, loudness_db: np.ndarray
+def _harmonic_synth(
+    f0_norm: np.ndarray,
+    amps: np.ndarray,
+    harm_dist: np.ndarray,
+    n_samples: int,
 ) -> np.ndarray:
-    """Run ONNX decoder and return raw 16 kHz audio.
+    """Additive harmonic synthesis in pure numpy.
 
     Args:
-        session: Loaded onnxruntime InferenceSession.
-        f0_hz: Shape [1, n_frames, 1].
-        loudness_db: Shape [1, n_frames, 1].
+        f0_norm: [T] normalised F0 (multiply by 2000 for Hz).
+        amps:    [T, 1] amplitude envelope.
+        harm_dist: [T, N_HARMONICS] harmonic distribution.
+        n_samples: Output length in samples.
 
     Returns:
-        Mono float32 audio, shape [n_samples].
+        audio: [n_samples] float32.
     """
-    outputs = session.run(
-        None,
-        {"f0_hz": f0_hz, "loudness_db": loudness_db},
-    )
-    audio_out: np.ndarray = outputs[0][0]  # [1, T] → [T]
-    return audio_out.astype(np.float32)
+    f0_hz = _upsample_1d(f0_norm * 2000.0, n_samples)       # Hz
+    amp_up = _upsample_1d(amps[:, 0], n_samples)
+
+    harm_nums = np.arange(1, N_HARMONICS + 1, dtype=np.float32)
+    harm_freqs = f0_hz[:, np.newaxis] * harm_nums             # [n_samples, N_HARM]
+    harm_freqs[harm_freqs > SAMPLE_RATE / 2] = 0.0
+
+    phases = 2.0 * np.pi * np.cumsum(harm_freqs / SAMPLE_RATE, axis=0)
+
+    harm_dist_up = np.zeros((n_samples, N_HARMONICS), dtype=np.float32)
+    for i in range(N_HARMONICS):
+        harm_dist_up[:, i] = _upsample_1d(harm_dist[:, i], n_samples)
+
+    audio = np.sum(np.sin(phases) * harm_dist_up, axis=-1) * amp_up
+    return audio.astype(np.float32)
 
 
-def _upsample(audio_16k: np.ndarray) -> np.ndarray:
-    """Upsample 16 kHz audio to 44.1 kHz using a polyphase filter.
-
-    Uses the exact ratio 44100/16000 = 441/160.
+def _noise_synth(noise_mags: np.ndarray, n_samples: int) -> np.ndarray:
+    """Spectral-envelope noise synthesis in pure numpy.
 
     Args:
-        audio_16k: Mono float32 audio at 16 kHz.
+        noise_mags: [T, N_NOISE_BANDS] noise filter magnitudes.
+        n_samples: Output length in samples.
 
     Returns:
-        Mono float32 audio at 44.1 kHz.
+        audio: [n_samples] float32.
     """
+    noise = np.random.randn(n_samples).astype(np.float32)
+    mean_mags = np.mean(noise_mags, axis=0)                   # [N_NOISE_BANDS]
+    noise_fft = np.fft.rfft(noise)
+    n_freqs = len(noise_fft)
+    mag_up = np.interp(
+        np.linspace(0.0, 1.0, n_freqs),
+        np.linspace(0.0, 1.0, N_NOISE_BANDS),
+        mean_mags,
+    ).astype(np.float32)
+    noise_fft *= mag_up
+    return np.fft.irfft(noise_fft, n=n_samples).astype(np.float32)
+
+
+def _synthesize(features: np.ndarray, session: ort.InferenceSession) -> np.ndarray:
+    """Run ONNX decoder then synthesise audio in numpy.
+
+    Args:
+        features: [n_frames, 2] normalised features.
+        session: Loaded ONNX decoder session.
+
+    Returns:
+        Mono float32 audio at SAMPLE_RATE.
+    """
+    feat_batch = features[np.newaxis]                         # [1, T, 2]
+    outputs = session.run(None, {"features": feat_batch})
+    amps, harm_dist, noise_mags = outputs[0][0], outputs[1][0], outputs[2][0]
+    # amps: [T, 1], harm_dist: [T, N_HARM], noise_mags: [T, N_NOISE]
+
+    n_samples = len(features) * HOP_SAMPLES
+    f0_norm = features[:, 0]
+
+    harmonic = _harmonic_synth(f0_norm, amps, harm_dist, n_samples)
+    noise = _noise_synth(noise_mags, n_samples)
+
+    audio = harmonic + 0.1 * noise
+    peak = np.max(np.abs(audio)) + 1e-8
+    return (audio / peak).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def _upsample_to_44k(audio_16k: np.ndarray) -> np.ndarray:
+    """Upsample 16 kHz → 44.1 kHz using polyphase filter (441/160 ratio)."""
     return scipy.signal.resample_poly(audio_16k, up=441, down=160).astype(np.float32)
 
 
 def _write_wav(path: str, audio: np.ndarray) -> None:
-    """Write float32 audio as 16-bit PCM WAV at _OUTPUT_SR.
-
-    Args:
-        path: Destination file path.
-        audio: Mono float32 audio normalised to [-1, 1].
-    """
+    """Write float32 audio as 16-bit PCM WAV at OUTPUT_SR."""
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
-        wf.setframerate(_OUTPUT_SR)
+        wf.setframerate(OUTPUT_SR)
         wf.writeframes(pcm.tobytes())
-    logger.info("Wrote cloned WAV → %s (%.1f s)", path, len(audio) / _OUTPUT_SR)
+    logger.info("Wrote cloned WAV → %s (%.1f s)", path, len(audio) / OUTPUT_SR)
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="DDSP timbre-cloning inference.")
-    parser.add_argument("--wav", required=True, help="Input session WAV file.")
+    parser.add_argument("--wav", required=True, help="Input session WAV.")
     parser.add_argument("--model", required=True, help="Model directory (contains decoder.onnx).")
     parser.add_argument("--out", required=True, help="Output cloned WAV path.")
     args = parser.parse_args()
@@ -143,26 +208,26 @@ def main() -> None:
     model_dir = Path(args.model)
     onnx_path = model_dir / "decoder.onnx"
     if not onnx_path.exists():
-        logger.error("decoder.onnx not found in %s — run ddsp_worker/train.py first.", model_dir)
+        logger.error("decoder.onnx not found in %s — run train.py first.", model_dir)
         sys.exit(1)
 
+    frame_rate = FRAME_RATE
     meta_path = model_dir / "meta.json"
-    frame_rate = _FRAME_RATE
     if meta_path.exists():
         meta = json.loads(meta_path.read_text())
-        frame_rate = meta.get("frame_rate", _FRAME_RATE)
+        frame_rate = meta.get("frame_rate", FRAME_RATE)
 
-    audio = _load_audio(args.wav, _DDSP_SR)
-    f0_hz, loudness_db = _compute_features(audio, frame_rate)
+    audio = _load_audio(args.wav)
+    features = _compute_features(audio, frame_rate)
 
     logger.info("Loading ONNX decoder from %s", onnx_path)
-    sess_opts = ort.SessionOptions()
-    sess_opts.inter_op_num_threads = 2
-    sess_opts.intra_op_num_threads = 4
-    session = ort.InferenceSession(str(onnx_path), sess_options=sess_opts)
+    opts = ort.SessionOptions()
+    opts.inter_op_num_threads = 2
+    opts.intra_op_num_threads = 4
+    session = ort.InferenceSession(str(onnx_path), sess_options=opts)
 
-    audio_16k = _run_decoder(session, f0_hz, loudness_db)
-    audio_44k = _upsample(audio_16k)
+    audio_16k = _synthesize(features, session)
+    audio_44k = _upsample_to_44k(audio_16k)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
