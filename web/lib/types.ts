@@ -27,3 +27,28 @@ export interface MidiEvent {
   velocity: number;
   time_ms: number;
 }
+
+// Post-processing
+
+export interface TranscribeResponse {
+  status: string;
+  midi_path: string;
+}
+
+export interface CalibrateResponse {
+  status: string; // "queued" | "done" | "error"
+  job_id: string;
+  model_dir?: string;
+  error?: string;
+}
+
+export interface CloneResponse {
+  status: string;
+  cloned_wav_path: string;
+}
+
+export interface ModelInfo {
+  name: string;
+  model_dir: string;
+  has_onnx: boolean;
+}

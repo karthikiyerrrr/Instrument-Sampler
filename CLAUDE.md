@@ -41,8 +41,8 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 
 ## Project Status
 
-- Milestones 1, 2, 4 complete. Milestone 3 (post-processing) pending.
-- `.venv` active with live-path deps. No post-processing deps installed yet.
+- All milestones complete through task 17. Post-processing (tasks 9–12) implemented on `post-processing` branch.
+- `.venv` active with live-path + transcription deps. `.venv-ddsp` must be created manually (Python 3.10 + `requirements-ddsp.txt`).
 - DDSP timbre cloning via subprocess isolation. RAVE removed from plan.
 
 | # | Task | Status |
@@ -55,10 +55,10 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 | 6 | Implement live MIDI bridge (mido virtual port) | Done |
 | 7 | Implement config loader and CLI (config.yaml, argparse) | Done |
 | 8 | Implement diagnostics module (queue depths, timing, overflow flags) | Done |
-| 9 | Implement post-recording transcription (basic-pitch) | Pending |
-| 10 | Set up DDSP subprocess isolation (Python 3.10 venv, subprocess runner) | Pending |
-| 11 | Implement calibration workflow (CLI + Web UI recording, DDSP fine-tuning) | Pending |
-| 12 | Implement post-recording timbre cloning (DDSP inference via subprocess) | Pending |
+| 9 | Implement post-recording transcription (basic-pitch) | Done |
+| 10 | Set up DDSP subprocess isolation (Python 3.10 venv, subprocess runner) | Done |
+| 11 | Implement calibration workflow (CLI + Web UI recording, DDSP fine-tuning) | Done |
+| 12 | Implement post-recording timbre cloning (DDSP inference via subprocess) | Done |
 | 13 | Integration testing and latency benchmarking | Pending |
 | 14 | FastAPI API layer with SessionManager, REST routes, WebSocket MIDI stream | Done |
 | 15 | Next.js scaffold with TypeScript, Tailwind, App Router, API proxy | Done |
@@ -69,6 +69,7 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 
 - **aubio Python 3.11 wheels**: Use `aubio-ledfx` fork.
 - **DDSP + Python 3.11**: Resolved via subprocess isolation in `.venv-ddsp`.
+- **`.venv-ddsp` setup**: Must be created manually — `python3.10 -m venv .venv-ddsp && .venv-ddsp/bin/pip install -r requirements-ddsp.txt`.
 
 ---
 

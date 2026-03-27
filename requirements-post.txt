@@ -1,4 +1,4 @@
-# Post-processing dependencies (Milestone 3)
-# basic-pitch[onnx]
-# onnxruntime
-# librosa
+# Post-processing dependencies (Milestone 3 — Python 3.11 main venv)
+basic-pitch[onnx]
+onnxruntime
+librosa

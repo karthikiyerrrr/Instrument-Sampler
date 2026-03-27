@@ -1,9 +1,13 @@
 import type {
   AudioDevice,
+  CalibrateResponse,
+  CloneResponse,
   MidiEvent,
+  ModelInfo,
   SessionStatus,
   StartResponse,
   StopResponse,
+  TranscribeResponse,
 } from "./types";
 
 const BASE = "";
@@ -37,6 +41,47 @@ export function stopSession(): Promise<StopResponse> {
 
 export function getSessionStatus(): Promise<SessionStatus> {
   return json<SessionStatus>("/api/session/status");
+}
+
+// Post-processing
+
+export function transcribeWav(wavPath: string): Promise<TranscribeResponse> {
+  return json<TranscribeResponse>("/api/post-process/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav_path: wavPath }),
+  });
+}
+
+export function startCalibration(
+  wavPath: string,
+  modelName: string,
+  steps = 300,
+): Promise<CalibrateResponse> {
+  return json<CalibrateResponse>("/api/post-process/calibrate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav_path: wavPath, model_name: modelName, steps }),
+  });
+}
+
+export function pollCalibration(jobId: string): Promise<CalibrateResponse> {
+  return json<CalibrateResponse>(`/api/post-process/calibrate/${jobId}`);
+}
+
+export function cloneTimbre(
+  wavPath: string,
+  modelDir: string,
+): Promise<CloneResponse> {
+  return json<CloneResponse>("/api/post-process/clone", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav_path: wavPath, model_dir: modelDir }),
+  });
+}
+
+export function listModels(): Promise<ModelInfo[]> {
+  return json<ModelInfo[]>("/api/post-process/models");
 }
 
 export function connectMidiWebSocket(

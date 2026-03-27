@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import DeviceSelector from "@/components/DeviceSelector";
 import MidiVisualizer from "@/components/MidiVisualizer";
+import PostProcessingPanel from "@/components/PostProcessingPanel";
 import SessionControls from "@/components/SessionControls";
 import type { MidiEvent, StopResponse } from "@/lib/types";
 
@@ -68,6 +69,8 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {lastSession && <PostProcessingPanel wavPath={lastSession.wav_path} />}
     </div>
   );
 }

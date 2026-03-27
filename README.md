@@ -23,22 +23,23 @@ Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI
 4. **WAV Recording** — Every audio frame is simultaneously written to a timestamped `.wav` file for post-processing.
 5. **Diagnostics** — A monitoring thread periodically logs queue depths, overflow flags, and aubio processing latency.
 
-### Post-Recording Path *(not yet implemented)*
+### Post-Recording Path
 
 After a session ends, two offline stages process the recorded `.wav` file:
 
-- **Transcription** — Spotify's `basic-pitch` (CNN, ONNX backend) produces a polyphonic `.mid` file with accurate note boundaries, velocities, and pitch bends.
-- **Timbre Cloning** — Google's DDSP (Differentiable Digital Signal Processing) synthesizes audio that recreates the instrument's acoustic texture, outputting a new `.wav` file. DDSP runs in an isolated Python 3.10 subprocess to avoid TensorFlow version conflicts with the main 3.11 environment.
+- **Transcription** — Spotify's `basic-pitch` (CNN, ONNX backend) produces a polyphonic `.mid` file with accurate note boundaries, velocities, and pitch bends. Triggered via `POST /api/post-process/transcribe` or the Web UI.
+- **Timbre Cloning** — Google's DDSP (Differentiable Digital Signal Processing) synthesizes audio that recreates the instrument's acoustic texture, outputting a new `.wav` file at 44.1 kHz. DDSP runs in an isolated Python 3.10 subprocess to avoid TensorFlow version conflicts with the main 3.11 environment. Triggered via `POST /api/post-process/clone`.
 
-### Calibration *(not yet implemented)*
+### Calibration
 
-Before timbre cloning can match your instrument, you run a one-time **calibration** step:
+Before timbre cloning can match your instrument, run a one-time **calibration** step:
 
-1. Select a base DDSP model (e.g., violin, flute) or provide your own checkpoint.
-2. Record yourself playing a chromatic scale across your instrument's range (~30 seconds of distinct notes).
-3. The system fine-tunes the base model on your calibration recording, producing a personalized checkpoint.
+1. Record a calibration session (ideally ≥ 3 minutes of clean, monophonic playing across the full pitch range).
+2. Submit the recording via `POST /api/post-process/calibrate` with a model name.
+3. DDSP fine-tunes in the background — poll `GET /api/post-process/calibrate/{job_id}` for status.
+4. The trained model (`decoder.onnx`) is saved to `models/<name>/` and immediately available for cloning.
 
-The fine-tuned model is then used for all subsequent timbre cloning sessions. Calibration is available through both the CLI and the Web UI. Fine-tuning takes approximately 5-15 minutes on CPU; a GPU accelerates this significantly.
+The Web UI's **Post-Processing** panel (shown after each session) provides buttons for all three steps.
 
 ### Web UI
 
@@ -162,9 +163,11 @@ src/
 │   └── recorder.py         # WAV file writer consumer
 ├── bridge/
 │   └── midi_sender.py      # mido virtual MIDI port sender
-├── transcription/          # (Milestone 3 — pending) basic-pitch offline transcription
-├── timbre/                 # (Milestone 3 — pending) DDSP subprocess runner + inference
-├── calibration/            # (Milestone 3 — pending) guided scale recording + DDSP fine-tuning
+├── transcription/
+│   └── transcribe.py       # basic-pitch polyphonic MIDI transcription
+├── timbre/
+│   ├── runner.py           # Subprocess launcher for .venv-ddsp scripts
+│   └── clone.py            # calibrate() and clone_timbre() high-level API
 └── api/
     ├── server.py           # FastAPI app + CORS
     ├── routes.py           # REST endpoints (devices, session)
@@ -179,7 +182,8 @@ web/                        # Next.js 16 frontend
 │   ├── Dashboard.tsx
 │   ├── DeviceSelector.tsx
 │   ├── SessionControls.tsx
-│   └── MidiVisualizer.tsx
+│   ├── MidiVisualizer.tsx
+│   └── PostProcessingPanel.tsx  # Transcribe / Calibrate / Clone UI
 └── lib/
     ├── api.ts              # Typed fetch helpers
     └── types.ts            # Shared TypeScript interfaces
@@ -203,16 +207,19 @@ The DDSP dependencies live in a **separate Python 3.10 venv** (`.venv-ddsp`) bec
 
 - **Milestone 1** — Ingestion pipeline with Dispatcher fan-out, aubio live analyzer, WAV recorder.
 - **Milestone 2** — Live MIDI bridge (virtual port via mido), YAML config loader with CLI overrides, diagnostics monitor.
+- **Milestone 3** — Post-processing: polyphonic transcription (`basic-pitch` + ONNX); DDSP subprocess isolation (`ddsp_worker/train.py` fine-tunes, `ddsp_worker/infer.py` synthesises); calibration API with background job tracking; timbre cloning via onnxruntime; Web UI PostProcessingPanel.
 - **Milestone 4** — Web UI: FastAPI backend with session lifecycle, device listing, WebSocket MIDI broadcast; Next.js 16 frontend with device selector, record/stop controls, and canvas piano-roll visualizer.
 
-**In Progress / Pending:**
+**Pending:**
 
-- **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch`; timbre cloning via DDSP (subprocess-isolated Python 3.10 venv); calibration workflow (guided scale recording + model fine-tuning, CLI and Web UI); integration testing and latency benchmarking.
+- **Task 13** — Integration testing and latency benchmarking.
+- `.venv-ddsp` must be created manually before timbre cloning is available.
 
 **Known Issues:**
 
 - `aubio` has no official Python 3.11 wheels — use the `aubio-ledfx` fork instead.
 - DDSP requires TensorFlow on Python 3.10 — resolved via a separate `.venv-ddsp` invoked as a subprocess from the main 3.11 app.
+- DDSP training requires ≥ 3 minutes of clean monophonic audio for reliable results; shorter clips will produce a warning but will still attempt training.
 
 ## License
 
