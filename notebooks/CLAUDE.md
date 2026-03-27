@@ -24,6 +24,6 @@ Requires Python 3.11 (3.10+ compatible). Uses TensorFlow (not PyTorch) — this 
 | 10 | Set up DDSP in notebook venv (ddsp no-deps + torchcrepe shim) | Done |
 | 11 | Implement calibration workflow (preprocessing + fine-tuning) | Done |
 | 12 | Implement post-recording timbre cloning (DDSP inference) | Done |
-| N1 | Test Group 1 (Continuous Mono) DDSP pipeline end-to-end | In Progress |
+| N1 | Test Group 1 (Continuous Mono) DDSP pipeline end-to-end | Done |
 | N2 | Test Group 2 (Polyphonic Plucked/Struck) Karplus-Strong pipeline | Pending |
 | N3 | Test Group 3 (Unpitched Percussion) WaveNet/NSynth pipeline | Pending |

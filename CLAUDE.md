@@ -57,6 +57,7 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 ## Project Status
 
 - Milestones 1–4 code complete (DDSP pipeline moved from app to `notebooks/` for standalone testing). Integration testing (Task 13) pending.
+- Group 1 DDSP notebook pipeline (Task N1) complete: synthetic audio generator, end-to-end test runner (`notebooks/run_group1_e2e.py`), all four notebooks updated with correct path defaults and smoke-test mode.
 - Milestone 5 planned: instrument-group classification, preprocessing, group-specific transcription and synthesis.
 - `.venv` active with live-path deps. Post-processing deps in `requirements-post.txt`. DDSP deps in `requirements-ddsp.txt` (notebooks only).
 

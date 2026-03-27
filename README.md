@@ -216,10 +216,11 @@ All app dependencies run in a single Python 3.11 venv. DDSP dependencies are sep
 - **Milestone 2** — Live MIDI bridge (virtual port via mido), YAML config loader with CLI overrides, diagnostics monitor.
 - **Milestone 3** — Post-processing: polyphonic transcription via `basic-pitch` (ONNX). DDSP timbre cloning pipeline (calibration, fine-tuning, inference) moved to standalone Jupyter notebooks under `notebooks/` for testing. Pre-trained DDSP checkpoints available for violin and tenor saxophone.
 - **Milestone 4** — Web UI: FastAPI backend with session lifecycle, device listing, WebSocket MIDI broadcast; Next.js 16 frontend with device selector, record/stop controls, and canvas piano-roll visualizer.
+- **Group 1 Notebook Testing (Task N1)** — End-to-end DDSP pipeline validated: synthetic audio generator (`notebooks/shared/test_audio.py`), test runner (`notebooks/run_group1_e2e.py`) covering all 6 stages with assertions, smoke-test mode (50 steps) and full-run mode (2000 steps). All four Group 1 notebooks updated with working path defaults.
 
 **In Progress:**
 
-- **Notebook testing** — Group 1 DDSP pipeline (preprocessing, transcription, fine-tuning, inference) testing in progress via `notebooks/`. Shared utilities (`notebooks/shared/ddsp.py`, `notebooks/shared/transcription.py`) support the notebook workflows. Groups 2 and 3 notebook pipelines pending.
+- **Notebook testing** — Groups 2 and 3 notebook pipelines pending (Karplus-Strong, WaveNet/NSynth).
 
 **Pending** (tracked in directory-specific `CLAUDE.md` files):
 
