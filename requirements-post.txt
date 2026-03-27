@@ -1,4 +1,4 @@
-# Post-processing dependencies (Milestone 3)
-# basic-pitch[onnx]
-# onnxruntime
-# librosa
+# Post-processing dependencies — offline transcription
+basic-pitch[onnx]
+onnxruntime
+librosa

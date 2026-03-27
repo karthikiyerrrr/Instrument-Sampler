@@ -1,5 +1,5 @@
 ---
-description: Coding standards for pitch and onset detection — live aubio analysis for real-time MIDI feedback and offline basic-pitch transcription for polyphonic MIDI export.
+description: Coding standards for pitch and onset detection — live aubio analysis for real-time MIDI feedback and group-specific offline transcription (Basic Pitch for Groups 1+2, onset detection for Group 3).
 alwaysApply: false
 globs: ["**/live/**", "**/transcription/**", "**/midi/**", "**/pitch/**"]
 ---
@@ -107,45 +107,87 @@ def live_analyzer(
 
 ---
 
-## Part B — Post-Recording Transcription (basic-pitch)
+## Part B — Post-Recording Transcription (Group-Specific)
 
-### Preferred Library
+Transcription approach varies by instrument group. All run offline on the preprocessed WAV file.
 
-Use `basic-pitch` by Spotify with the **ONNX backend** for polyphonic transcription of the complete recorded WAV file.
+---
+
+### B.1 — Group 1: Basic Pitch (Monophonic)
+
+Use `basic-pitch` by Spotify with the **ONNX backend** for monophonic transcription of continuous instruments (flute, sax, violin, voice).
 
 Install: `pip install "basic-pitch[onnx]"`
-
-### Usage
-
-basic-pitch is designed for offline whole-file processing. Since the recording is complete before this stage runs, use the standard high-level API:
 
 ```python
 from basic_pitch.inference import predict
 from basic_pitch import ICASSP_2022_MODEL_PATH
 
 model_output, midi_data, note_events = predict(
-    audio_path="recordings/session.wav",
+    audio_path="recordings/session_preprocessed.wav",
     model_or_model_path=ICASSP_2022_MODEL_PATH,
 )
-
 midi_data.write("output/session.mid")
 ```
 
-`predict()` handles resampling (44.1 kHz → 22050 Hz), windowing, inference, and note extraction internally. Do NOT reimplement these steps manually.
+`predict()` handles resampling, windowing, inference, and note extraction. Output is a `pretty_midi.PrettyMIDI` object with single-voice MIDI (these instruments are monophonic, so the output is expected to be a single melodic line). Includes pitch bend data for sub-semitone accuracy.
 
-### Output
+---
 
-`midi_data` is a `pretty_midi.PrettyMIDI` object. It can be saved directly as a `.mid` file and imported into FL Studio. The output includes:
+### B.2 — Group 2: Basic Pitch (Polyphonic, Onset-Tuned)
 
-- Polyphonic note events with onset/offset times, pitches, and velocities
-- Pitch bend data for sub-semitone accuracy
+Use the same `basic-pitch` model for polyphonic plucked/struck instruments (guitar, piano, harp). The same `predict()` API applies, but the input has been preprocessed with HPSS to separate the harmonic and percussive components, improving onset detection accuracy.
 
-### Performance
+```python
+model_output, midi_data, note_events = predict(
+    audio_path="recordings/session_preprocessed.wav",
+    model_or_model_path=ICASSP_2022_MODEL_PATH,
+    onset_threshold=0.6,       # higher sensitivity for sharp transients
+    min_note_length_ms=50,     # allow shorter notes (fast plucks)
+)
+midi_data.write("output/session.mid")
+```
 
-basic-pitch runs at ~3x real-time on CPU with the ONNX backend. A 60-second recording processes in ~20 seconds. There is no real-time constraint since this runs after the session.
+Output is polyphonic MIDI with per-note onset, offset, pitch, and velocity. The HPSS preprocessing ensures sharp attack transients from picks or hammer strikes are preserved.
 
-### Anti-Patterns
+---
 
-- **Loading TensorFlow** when ONNX is available — adds ~500 MB memory overhead and slower startup. Install with `[onnx]` extra.
-- **Manually chunking audio and stitching results** — unnecessary complexity now that inference is offline. Let `predict()` handle the full file.
-- **Running post-processing on the main/audio thread** — run in a background thread or subprocess to keep the UI responsive.
+### B.3 — Group 3: Onset Detection + Amplitude Envelopes
+
+Pitch tracking is irrelevant for unpitched percussion (snare, cymbals, kick). This pipeline strictly detects when and how hard the instrument was struck.
+
+```python
+import librosa
+import numpy as np
+
+y, sr = librosa.load("recordings/session_preprocessed.wav", sr=44100)
+
+# Onset detection via spectral flux
+onset_times = librosa.onset.onset_detect(
+    y=y, sr=sr, units="time", hop_length=512, backtrack=True
+)
+
+# RMS amplitude envelope per onset (200ms window)
+envelopes = []
+window_samples = int(0.2 * sr)
+for t in onset_times:
+    start = int(t * sr)
+    end = min(start + window_samples, len(y))
+    segment = y[start:end]
+    rms = librosa.feature.rms(y=segment, frame_length=512, hop_length=128)[0]
+    envelopes.append(rms)
+```
+
+Output is a list of `(onset_time, amplitude_envelope)` tuples — NOT standard MIDI. This data is consumed directly by the WaveNet/NSynth synthesis engine.
+
+Optionally, classify each hit (kick/snare/cymbal) using a small CNN on mel-spectrograms around each onset for timbre-aware synthesis.
+
+---
+
+### General Anti-Patterns
+
+- **Loading TensorFlow** when ONNX is available — install Basic Pitch with `[onnx]` extra.
+- **Running post-processing on the main/audio thread** — run in a background thread or subprocess.
+- **Applying Basic Pitch to drum-only signals** — it will hallucinate pitched notes from broadband noise.
+- **Pitch-tracking unpitched percussion** — use onset detection + envelopes only (Group 3).
+- **Manually chunking audio and stitching results** — let `predict()` handle the full file.

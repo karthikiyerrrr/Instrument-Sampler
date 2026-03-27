@@ -1,0 +1,9 @@
+# DDSP timbre cloning dependencies (for notebook testing)
+# Also install: pip install --no-deps "ddsp>=3.5.0"
+tensorflow>=2.18
+tensorflow-probability[tf]>=0.25
+gin-config
+torchcrepe
+librosa
+scipy
+numpy

@@ -1,154 +1,137 @@
 ---
-description: Coding standards for post-recording timbre cloning — RAVE as primary engine, DDSP as fallback, training workflow, model export, and offline inference.
+description: Coding standards for post-recording synthesis — three instrument-group-specific engines: DDSP (Group 1), Karplus-Strong (Group 2), WaveNet/NSynth (Group 3).
 alwaysApply: false
-globs: ["**/timbre/**", "**/synth/**", "**/rave/**", "**/ddsp/**"]
+globs: ["**/timbre/**", "**/synth/**", "**/ddsp/**", "**/karplus/**", "**/wavenet/**"]
 ---
 
-# Timbre Cloning — Post-Processing Stage
+# Synthesis — Post-Processing Stage
 
-Timbre cloning runs **offline** on the complete recorded WAV file after the live session ends. There is no real-time constraint. The goal is to produce a synthesized audio file that recreates the original instrument's acoustic texture, suitable for import into FL Studio.
+Synthesis runs **offline** on the complete preprocessed WAV file after the live session ends. There is no real-time constraint. The goal is to produce a synthesized audio file that recreates the original instrument's acoustic texture, suitable for import into FL Studio.
 
----
+The synthesis engine is selected by instrument group.
 
-## Primary: RAVE
+## Instrument Groups
 
-### Why RAVE
-
-RAVE (Realtime Audio Variational autoEncoder) by IRCAM is the recommended engine:
-
-- **Actively maintained** — v2.3.1 (December 2023), PyTorch-based.
-- **Fast** — 20x real-time on a standard laptop CPU; ONNX export for lightweight deployment.
-- **Python 3.11 compatible** — requires Python >= 3.9, no TensorFlow dependency.
-- **Native timbre transfer** — the latent-space architecture supports converting one instrument's sound to another.
-- **48 kHz native sample rate** — less resampling friction than DDSP's 16 kHz.
-
-Install: `pip install acids-rave torch torchaudio`
-
-### Training Workflow
-
-Train a RAVE model on 5–10 minutes of varied single-instrument recordings (different dynamics, pitch ranges, articulations).
-
-```bash
-rave train --config violin --db_path ./dataset --name my_instrument --val_every 1000 --n_signal 131072
-```
-
-- `--config` selects a preset architecture. Common choices: `violin`, `vintage`, `noise`, `onnx` (for ONNX-optimized export).
-- `--db_path` points to a directory of `.wav` files (mono, any sample rate — RAVE resamples internally).
-- Training requires a GPU. Target ~1M steps for high-quality timbre reproduction, though ~100k steps often suffices for recognizable timbre.
-
-### Model Export
-
-After training, export to TorchScript (or ONNX with the `onnx` config):
-
-```bash
-rave export --run ./runs/my_instrument/ --streaming
-```
-
-This produces a `.ts` (TorchScript) file that can be loaded without the full RAVE training codebase.
-
-### Offline Inference
-
-Process the complete recorded WAV in a single pass:
-
-```python
-import torch
-import torchaudio
-
-model = torch.jit.load("models/my_instrument.ts")
-model.eval()
-
-audio, sr = torchaudio.load("recordings/session.wav")
-if sr != 48000:
-    audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=48000)
-
-with torch.no_grad():
-    latent = model.encode(audio.unsqueeze(0))
-    reconstructed = model.decode(latent)
-
-reconstructed = reconstructed.squeeze(0)
-if reconstructed.shape[0] == 1:
-    reconstructed = reconstructed.squeeze(0)
-
-torchaudio.save("output/session_timbre.wav", reconstructed.unsqueeze(0), 48000)
-```
-
-If the final output needs to be 44.1 kHz for DAW import, resample after synthesis:
-
-```python
-output_44k = torchaudio.functional.resample(reconstructed, orig_freq=48000, new_freq=44100)
-torchaudio.save("output/session_timbre.wav", output_44k.unsqueeze(0), 44100)
-```
-
-### Model Provisioning
-
-Place trained models in a `models/` directory at the project root. The `config.yaml` should reference the model path:
-
-```yaml
-timbre:
-  engine: rave
-  model_path: models/my_instrument.ts
-```
-
-Consider providing a pre-trained checkpoint for a common instrument (e.g., acoustic guitar) to lower the barrier for new users.
+| Group | Instruments | Engine | Key Characteristic |
+|-------|------------|--------|-------------------|
+| 1 — Continuous Mono | Flute, Sax, Trumpet, Violin, Voice | DDSP (Harmonic + Noise) | Sustained, harmonic, monophonic |
+| 2 — Polyphonic Plucked/Struck | Guitar, Piano, Harp, Harpsichord | Differentiable Karplus-Strong | Transient-rich, polyphonic, decaying |
+| 3 — Unpitched Percussion | Snare, Cymbals, Kick, Woodblock | WaveNet Autoencoder / GAN | No stable pitch, onset-driven |
 
 ---
 
-## Fallback: DDSP
+## Group 1: DDSP (Harmonic + Noise)
 
-For users with existing DDSP checkpoints, DDSP remains supported as a fallback.
+DDSP (Differentiable Digital Signal Processing) is the exact architecture designed for continuous, monophonic instruments. A neural network acts as a frame-by-frame controller, outputting amplitudes for a bank of sine wave oscillators and the frequency response for a filtered noise generator.
 
-### Compatibility Warning
+### Environment
 
-DDSP v3.5.1 (last release April 2023) depends on TensorFlow, which has documented Python 3.11 issues:
+- **TensorFlow-based** — requires isolated Python 3.10 venv (`.venv-ddsp`), invoked as subprocess.
+- Never `import tensorflow` in the main 3.11 process.
+- Both fine-tuning and inference run inside `.venv-ddsp` via subprocess scripts in `timbre/ddsp_scripts/`.
 
-- Dependency resolver backtracking during `pip install`
-- DLL loading failures on Windows with TF 2.19.0 + Python 3.11
-- Training may produce degenerated results with certain TF/Keras version combinations
+### Input / Output
 
-Recommendation: isolate DDSP training in a separate virtual environment with pinned versions (`tensorflow==2.12.0`, `keras==2.12.0`) in `requirements-train.txt`.
-
-### Inference Isolation
-
-At inference time, do NOT import `tensorflow`. Instead:
-
-1. During training, export the decoder to TFLite (`tf.lite.TFLiteConverter`) or ONNX (`tf2onnx`).
-2. At inference, load the exported model with `tflite_runtime` or `onnxruntime`.
-3. Implement the harmonic-plus-noise synthesizer in pure NumPy/SciPy — it is straightforward additive synthesis plus filtered noise and does not require the `ddsp` package.
-
-### DDSP Offline Inference
-
-```python
-import onnxruntime as ort
-import numpy as np
-import scipy.signal
-
-session = ort.InferenceSession("models/ddsp_decoder.onnx")
-
-# f0 and loudness extraction (use crepe or another f0 estimator)
-# ... produce f0_hz and loudness_db arrays ...
-
-decoder_output = session.run(None, {"f0": f0_hz, "loudness": loudness_db})
-# ... harmonic + noise synthesis in NumPy ...
-
-audio_44k = scipy.signal.resample_poly(audio_16k, up=441, down=160)
-```
-
-### DDSP Upsampling
-
-DDSP models operate at 16 kHz. Upsample to 44.1 kHz after synthesis:
+- **Input:** f0 contour + loudness contours extracted by Basic Pitch transcription.
+- **Output:** `.wav` at 44.1 kHz. DDSP operates at 16 kHz internally; upsample after synthesis:
 
 ```python
 import scipy.signal
 audio_44k = scipy.signal.resample_poly(audio_16k, up=441, down=160)
 ```
 
-Use `scipy.signal.resample_poly` for efficient polyphase resampling.
+### Transfer Learning
+
+- Fine-tuning from a pretrained base model requires ≥30 seconds of calibration audio.
+- Freeze GRU + input FC stacks; train output FC stack, synthesizer params, and reverb IR.
+- Training from scratch requires ≥3 minutes of varied audio.
+
+---
+
+## Group 2: Differentiable Karplus-Strong
+
+Instead of controlling additive sine waves, the neural network acts as an encoder that controls a differentiable Karplus-Strong string algorithm. This physically models the behavior of plucked and struck strings — excitation, decay, and body resonance.
+
+### Environment
+
+- **PyTorch-based** — runs in the main Python 3.11 process.
+- No subprocess isolation needed.
+
+### Architecture
+
+- A small neural network (MLP or lightweight RNN) predicts per-note Karplus-Strong parameters from MIDI input (pitch, velocity, duration):
+  - **Excitation signal** — initial noise burst or impulse shape
+  - **Damping coefficient** — controls how quickly the string energy decays
+  - **Delay-line length** — determines the fundamental frequency
+  - **Body resonance IR** — impulse response of the instrument body
+- Each note is rendered independently via the Karplus-Strong delay-line algorithm, then polyphonic notes are summed.
+
+### Input / Output
+
+- **Input:** Polyphonic MIDI from Basic Pitch transcription (note pitches, onsets, offsets, velocities).
+- **Output:** `.wav` at 44.1 kHz.
+
+### Calibration
+
+- Record ≥30 seconds of arpeggios across the instrument's range.
+- Fine-tune the body IR and damping network on the calibration recording.
+- During calibration, the network learns the physical parameters of the user's specific instrument — string stiffness, body resonance, and damping characteristics.
+
+---
+
+## Group 3: WaveNet Autoencoder / GAN (NSynth-like)
+
+Because there is no harmonic structure to map to an oscillator, the model must generate raw waveforms or shape pure noise. Architectures like NSynth (WaveNet autoencoder) reconstruct the complex, non-linear frequency content of percussive elements like a cymbal crash.
+
+### Environment
+
+- **PyTorch-based** — runs in the main Python 3.11 process.
+- No subprocess isolation needed.
+
+### Architecture
+
+- **Encoder:** Mel-spectrogram of each segmented drum hit → latent embedding.
+- **Decoder:** Autoregressive (WaveNet) or GAN-based waveform generation, conditioned on:
+  - Latent embedding from encoder
+  - One-hot drum class (kick, snare, cymbal, etc.) if hit classification is available
+
+### Input / Output
+
+- **Input:** Onset times + amplitude envelopes from Group 3 transcription (NOT standard MIDI).
+- **Output:** `.wav` at 44.1 kHz.
+
+### Inference Flow
+
+1. Segment preprocessed audio at detected onsets.
+2. Encode each hit segment into a latent embedding.
+3. Decode each latent with the target instrument's timbre.
+4. Place decoded hits at original onset times and sum.
+
+### Calibration
+
+- Record ≥30 seconds of varied hits per drum type.
+- Fine-tune the encoder on the user's specific drum kit.
+- Training from scratch requires ≥500 isolated hits per drum class and a GPU.
+
+---
+
+## Calibration (All Groups)
+
+| Group | Recording | Duration | What's Fine-Tuned |
+|-------|-----------|----------|-------------------|
+| 1 | Chromatic scale | ≥30s | DDSP output FC, synth params, reverb IR |
+| 2 | Arpeggios across range | ≥30s | Karplus-Strong body IR, damping network |
+| 3 | Varied hits per drum type | ≥30s | WaveNet/NSynth encoder |
+
+Calibration recordings are stored in `calibrations/<instrument_group>/`. Available via CLI (`--calibrate`) and Web UI.
 
 ---
 
 ## Anti-Patterns
 
-- **Running `import tensorflow` at inference time** — adds seconds to startup and hundreds of MB of memory. Use only exported models.
-- **Training on less than 3 minutes of audio** — underfits the timbre; aim for 5–10 minutes of varied dynamics and pitch range.
-- **Attempting real-time frame-by-frame inference** — timbre cloning is an offline post-processing step. Process the full file in one pass.
-- **Mixing RAVE and DDSP dependencies in the same environment** — PyTorch and TensorFlow conflict on GPU memory and sometimes on numpy/protobuf versions. Use separate requirement files.
+- **Using DDSP for unpitched percussion** — the harmonic synthesizer cannot model broadband noise bursts.
+- **Using Karplus-Strong for sustained wind/voice** — string decay does not model continuous oscillation.
+- **Importing TensorFlow in the main process** — DDSP must stay in `.venv-ddsp` subprocess.
+- **Mixing PyTorch + TF in the same process** — GPU memory conflicts and numpy/protobuf version clashes.
+- **Attempting real-time frame-by-frame synthesis** — all synthesis is offline post-processing.
+- **Training from scratch on insufficient data** — ≥3 min (Group 1), ≥30s calibration (Groups 1+2), ≥500 hits (Group 3).

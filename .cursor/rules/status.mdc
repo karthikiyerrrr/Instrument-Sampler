@@ -17,6 +17,7 @@ alwaysApply: true
 - Milestone 4 (Web UI) complete: FastAPI API layer (`src/api/`) with session management, REST endpoints, and WebSocket MIDI streaming; Next.js 16 frontend (`web/`) with device selector, record controls, and live piano-roll MIDI visualizer.
 - No post-processing dependencies installed (Milestone 3).
 - Milestone 3 architecture: DDSP for timbre cloning (subprocess-isolated Python 3.10 venv), with calibration workflow (guided scale recording + fine-tuning). RAVE removed from the plan.
+- Milestone 5 planned: instrument-group classification, preprocessing pipelines (Wiener, U-Net, HPSS, spectral gating), group-specific transcription (Basic Pitch for Groups 1+2, onset detection for Group 3), and group-specific synthesis (DDSP, Karplus-Strong, WaveNet/NSynth).
 
 ## Milestone 1 — Ingestion + Consumers (Tasks 1-5)
 
@@ -55,6 +56,17 @@ alwaysApply: true
 | 16 | Frontend components: DeviceSelector, SessionControls, MidiVisualizer, Dashboard | Done |
 | 17 | Wire page.tsx, .gitignore, status.mdc updates | Done |
 
+## Milestone 5 — Preprocessing & Multi-Pipeline (Tasks 18-23)
+
+| # | Task | Status |
+|---|------|--------|
+| 18 | Implement instrument group classifier (`src/preprocessing/classifier.py`) | Pending |
+| 19 | Implement preprocessing pipeline (Wiener, U-Net, HPSS, spectral gating) | Pending |
+| 20 | Implement onset-only transcription for Group 3 | Pending |
+| 21 | Implement Karplus-Strong differentiable synthesis (Group 2) | Pending |
+| 22 | Implement WaveNet/NSynth synthesis (Group 3) | Pending |
+| 23 | Add `instrument_group` config + CLI flag | Pending |
+
 ## Completed Milestones
 
 - **Architecture redesign** — two-mode pipeline (live aubio + offline basic-pitch/DDSP).
@@ -66,3 +78,5 @@ alwaysApply: true
 
 - **aubio Python 3.11 wheels**: Use `aubio-ledfx` fork (upstream has no 3.11 wheels).
 - **DDSP + Python 3.11**: TF compatibility issues. Resolved via subprocess isolation — DDSP runs in a dedicated Python 3.10 venv (`.venv-ddsp`), invoked as a subprocess from the main 3.11 app.
+- **WaveNet/NSynth (Group 3)**: Training requires GPU and dataset of ≥500 isolated drum hits per class.
+- **PyTorch + TF isolation**: Groups 2+3 (PyTorch, main process) and Group 1 DDSP (TF, subprocess) must never run in the same process.

@@ -7,20 +7,32 @@ alwaysApply: true
 
 ## Purpose
 
-Application that captures live audio from an acoustic instrument, provides real-time monophonic MIDI feedback to the performer, records the session, and then produces full polyphonic MIDI transcription and timbre-cloned audio as post-processing outputs — all routed into FL Studio.
+Application that captures live audio from an acoustic instrument, provides real-time monophonic MIDI feedback to the performer, records the session, classifies the instrument into one of three groups, and applies group-specific preprocessing, transcription, and timbre-cloned synthesis — all routed into FL Studio.
 
 ## Pipeline Architecture
 
-The system operates in two modes: a **live path** for low-latency feedback during performance, and a **post-recording path** for high-quality offline processing.
+The system operates in two modes: a **live path** for low-latency feedback during performance, and a **post-recording path** for high-quality offline processing. The post-recording path classifies the instrument and applies group-specific pipelines.
 
 ```
 Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI → FL Studio (virtual MIDI port)
-                                 └─→ [WAV Recorder] → .wav file ─┬─→ [Transcription (basic-pitch)] → .mid file → FL Studio (import)
-                                                                   └─→ [Timbre Cloning (DDSP subprocess)] → .wav file → FL Studio (import)
-                                                                              ↑
-                                                                 Calibration recording + base model
-                                                                        → fine-tuned model
+                                 └─→ [WAV Recorder] → .wav file
+                                          ↓
+                                 [Instrument Classifier] → Group 1 / 2 / 3
+                                          ↓
+                                 [Preprocessing (group-specific)]
+                                          ↓
+                              ┌───────────┼───────────┐
+                         Group 1     Group 2      Group 3
+                      Basic Pitch  Basic Pitch  Onset Detection
+                       (mono)    (poly, onset)  + Envelopes
+                          ↓           ↓              ↓
+                        DDSP     Karplus-Strong  WaveNet/NSynth
+                     (.venv-ddsp)  (PyTorch)      (PyTorch)
+                          ↓           ↓              ↓
+                       .wav/.mid → FL Studio (import)
 ```
+
+**Instrument groups:** (1) Continuous monophonic — flute, sax, violin, voice; (2) Polyphonic plucked/struck — guitar, piano, harp; (3) Unpitched percussion — snare, cymbals, kick.
 
 ### Stage 1 — Ingestion
 
@@ -32,27 +44,42 @@ Stream real-time audio buffers from the system input device using `sounddevice` 
 
 ### Stage 3 — Recording
 
-A WAV recorder consumer subscribes to the dispatcher and writes every audio frame to a `.wav` file on disk. This recorded file is the input for both post-processing stages.
+A WAV recorder consumer subscribes to the dispatcher and writes every audio frame to a `.wav` file on disk. This recorded file is the input for post-processing. The recorder must NOT apply any filtering or normalization — deliver the raw captured signal.
+
+### Stage 3a — Instrument Classification
+
+After recording, the system determines the instrument group from the `instrument_group` config setting (`auto`, `continuous-mono`, `polyphonic-plucked`, `unpitched-percussion`). In `auto` mode, audio features are analyzed to classify automatically.
+
+### Stage 3b — Preprocessing
+
+Group-specific audio cleaning runs offline on the complete WAV before transcription and synthesis:
+
+- **Group 1:** Wiener filter denoising (room tone noise profile) + 1D U-Net de-reverberation.
+- **Group 2:** Transient-preserving Wiener filter (oversubtraction α, spectral floor β) + HPSS (Harmonic-Percussive Source Separation) to isolate strike from resonant tail.
+- **Group 3:** Spectral gating focused on minimizing noise floor between discrete hits.
 
 ### Stage 4 — Post-Processing: Transcription
 
-After recording completes, Spotify `basic-pitch` (CNN, ONNX backend) runs on the full `.wav` file via its standard `predict()` API. It produces a polyphonic MIDI file with accurate note boundaries, velocities, and pitch bends. No streaming hacks or chunk stitching required.
+- **Groups 1+2:** `basic-pitch` (CNN, ONNX backend) runs on the preprocessed WAV via `predict()`. Group 1 expects monophonic output; Group 2 produces polyphonic MIDI with onset/velocity data. Output: `.mid` file.
+- **Group 3:** Onset detection via spectral flux + amplitude envelope extraction. No pitch tracking. Output: onset/envelope data consumed directly by the synthesis engine (not exported as `.mid`).
 
-### Stage 5 — Post-Processing: Timbre Cloning
+### Stage 5 — Post-Processing: Synthesis (Timbre Cloning)
 
-After recording completes, **DDSP** (Differentiable Digital Signal Processing) processes the full `.wav` file to synthesize audio that recreates the instrument's acoustic texture. Output is a `.wav` file at 44.1 kHz.
+Group-specific synthesis recreates the instrument's acoustic texture from the transcription output:
 
-DDSP runs in an **isolated Python 3.10 subprocess** (separate venv at `.venv-ddsp`) because its TensorFlow dependency is incompatible with the project's primary Python 3.11 environment. The main app invokes the DDSP interpreter via `subprocess` — no TensorFlow import ever occurs in the 3.11 process.
+- **Group 1 — DDSP (Harmonic + Noise):** TF-based, subprocess-isolated in `.venv-ddsp` (Python 3.10). Input: f0 + loudness contours. Operates at 16 kHz, upsampled to 44.1 kHz.
+- **Group 2 — Differentiable Karplus-Strong:** PyTorch, main process. Neural net controls physical string parameters (excitation, damping, delay-line, body resonance). Input: polyphonic MIDI.
+- **Group 3 — WaveNet Autoencoder / GAN (NSynth-like):** PyTorch, main process. Mel-spectrogram encoder → latent per hit → decoder. Input: onset times + amplitude envelopes.
 
 ### Stage 5a — Calibration
 
-Before timbre cloning, the user performs a one-time **calibration** per instrument:
+One-time calibration per instrument fine-tunes the synthesis model:
 
-1. Select a pretrained DDSP base model (bundled: violin, flute) or provide a custom `.ckpt` checkpoint.
-2. Record a guided chromatic scale across the instrument's range (~30 seconds of distinct notes).
-3. The system fine-tunes the base model on the calibration recording, producing a personalized checkpoint stored in `calibrations/`.
+- **Group 1:** ~30s chromatic scale → DDSP base model fine-tuning.
+- **Group 2:** ~30s arpeggios → Karplus-Strong body IR + damping fine-tuning.
+- **Group 3:** ~30s varied hits per drum type → WaveNet/NSynth encoder fine-tuning.
 
-Calibration is available via both the CLI (`--calibrate --ddsp-model <name>`) and the Web UI's calibration page. Fine-tuning takes approximately 5–15 minutes on CPU; GPU support is optional but recommended.
+Available via CLI (`--calibrate`) and Web UI. ~5–15 min on CPU; GPU recommended.
 
 ### Stage 6 — The Bridge
 
@@ -65,7 +92,9 @@ Calibration is available via both the CLI (`--calibrate --ddsp-model <name>`) an
 |---|---|---|---|
 | Live runtime | `requirements.txt` | Main (Python 3.11) | `sounddevice`, `numpy`, `aubio` (or `aubio-ledfx`), `mido`, `python-rtmidi`, `scipy` |
 | Transcription | `requirements-post.txt` | Main (Python 3.11) | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
-| Timbre cloning + calibration | `requirements-ddsp.txt` | DDSP (Python 3.10) | `ddsp`, `tensorflow`, `librosa` |
+| Preprocessing | `requirements-preprocess.txt` | Main (Python 3.11) | `noisereduce`, `scipy`, `torch`, `librosa` |
+| Synthesis (Groups 2+3) | `requirements-synth.txt` | Main (Python 3.11) | `torch`, `torchaudio` |
+| Synthesis (Group 1) | `requirements-ddsp.txt` | DDSP (Python 3.10) | `ddsp`, `tensorflow`, `librosa` |
 
 ## Key Constraints
 
@@ -73,6 +102,7 @@ Calibration is available via both the CLI (`--calibrate --ddsp-model <name>`) an
 |---|---|
 | Python version (main) | 3.11 |
 | Python version (DDSP) | 3.10 (separate `.venv-ddsp`, invoked as subprocess) |
+| Instrument groups | 3: continuous-mono, polyphonic-plucked, unpitched-percussion |
 | Live-path latency | < 50 ms end-to-end (ingestion → aubio → MIDI send) |
 | Post-processing latency | Offline; no real-time constraint |
 | Calibration time | ~5–15 min CPU, faster with GPU |

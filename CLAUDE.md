@@ -8,17 +8,30 @@
 
 ## Technical Specification
 
-Captures live audio from an acoustic instrument, provides real-time monophonic MIDI feedback, records the session, then produces polyphonic MIDI transcription and timbre-cloned audio as post-processing — all routed into FL Studio.
+Captures live audio from an acoustic instrument, provides real-time monophonic MIDI feedback, records the session, then classifies the instrument into one of three groups and applies group-specific preprocessing, transcription, and timbre-cloned synthesis — all routed into FL Studio.
 
 ```
 Mic → [Ingestion] → Dispatcher ─┬─→ [Live Analysis (aubio)] → MIDI → FL Studio (virtual MIDI port)
-                                 └─→ [WAV Recorder] → .wav file ─┬─→ [Transcription (basic-pitch)] → .mid file → FL Studio
-                                                                   └─→ [Timbre Cloning (DDSP subprocess)] → .wav file → FL Studio
-                                                                              ↑
-                                                                 Calibration recording + base model → fine-tuned model
+                                 └─→ [WAV Recorder] → .wav file
+                                          ↓
+                                 [Instrument Classifier] → Group 1 / 2 / 3
+                                          ↓
+                                 [Preprocessing (group-specific)]
+                                          ↓
+                              ┌───────────┼───────────┐
+                         Group 1     Group 2      Group 3
+                      Basic Pitch  Basic Pitch  Onset Detection
+                       (mono)    (poly, onset)  + Envelopes
+                          ↓           ↓              ↓
+                        DDSP     Karplus-Strong  WaveNet/NSynth
+                     (.venv-ddsp)  (PyTorch)      (PyTorch)
+                          ↓           ↓              ↓
+                       .wav/.mid → FL Studio (import)
 ```
 
-Live path is streaming-first (< 50 ms latency). Post-processing operates on complete files offline. DDSP runs in an isolated Python 3.10 subprocess (`.venv-ddsp`) — no TensorFlow in the main 3.11 process.
+**Instrument groups:** (1) Continuous monophonic — flute, sax, violin, voice; (2) Polyphonic plucked/struck — guitar, piano, harp; (3) Unpitched percussion — snare, cymbals, kick.
+
+Live path is streaming-first (< 50 ms latency). Post-processing operates on complete files offline. Synthesis engines (Karplus-Strong, WaveNet) will run in the main Python 3.11 process. DDSP (Group 1) has been moved to standalone notebooks under `notebooks/synthesis/` for testing.
 
 ### Dependencies
 
@@ -26,14 +39,16 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 |---|---|---|---|
 | Live runtime | `requirements.txt` | Python 3.11 | `sounddevice`, `numpy`, `aubio` (`aubio-ledfx`), `mido`, `python-rtmidi`, `scipy` |
 | Transcription | `requirements-post.txt` | Python 3.11 | `basic-pitch[onnx]`, `onnxruntime`, `librosa` |
-| Timbre cloning | `requirements-ddsp.txt` | Python 3.10 (`.venv-ddsp`) | `ddsp`, `tensorflow`, `librosa` |
+| Preprocessing | `requirements-preprocess.txt` | Python 3.11 | `noisereduce`, `scipy`, `torch`, `librosa` |
+| Synthesis (Groups 2+3) | `requirements-synth.txt` | Python 3.11 | `torch`, `torchaudio` |
+| Timbre cloning (Group 1) | `requirements-ddsp.txt` | Python 3.11 (notebooks only) | `ddsp` (no-deps), `tensorflow`, `torchcrepe` |
 
 ### Constraints
 
 | Constraint | Value |
 |---|---|
-| Python (main) | 3.11 |
-| Python (DDSP) | 3.10, separate venv, invoked as subprocess |
+| Python | 3.11 (main app); DDSP notebooks may use 3.10+ |
+| Instrument groups | 3: continuous-mono, polyphonic-plucked, unpitched-percussion |
 | Live-path latency | < 50 ms end-to-end |
 | Primary OS | macOS; Windows via loopMIDI + VB-Cable |
 
@@ -41,9 +56,9 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 
 ## Project Status
 
-- Milestones 1, 2, 4 complete. Milestone 3 (post-processing) pending.
-- `.venv` active with live-path deps. No post-processing deps installed yet.
-- DDSP timbre cloning via subprocess isolation. RAVE removed from plan.
+- Milestones 1–4 code complete (DDSP pipeline moved from app to `notebooks/` for standalone testing). Integration testing (Task 13) pending.
+- Milestone 5 planned: instrument-group classification, preprocessing, group-specific transcription and synthesis.
+- `.venv` active with live-path deps. Post-processing deps in `requirements-post.txt`. DDSP deps in `requirements-ddsp.txt` (notebooks only).
 
 | # | Task | Status |
 |---|------|--------|
@@ -55,20 +70,18 @@ Live path is streaming-first (< 50 ms latency). Post-processing operates on comp
 | 6 | Implement live MIDI bridge (mido virtual port) | Done |
 | 7 | Implement config loader and CLI (config.yaml, argparse) | Done |
 | 8 | Implement diagnostics module (queue depths, timing, overflow flags) | Done |
-| 9 | Implement post-recording transcription (basic-pitch) | Pending |
-| 10 | Set up DDSP subprocess isolation (Python 3.10 venv, subprocess runner) | Pending |
-| 11 | Implement calibration workflow (CLI + Web UI recording, DDSP fine-tuning) | Pending |
-| 12 | Implement post-recording timbre cloning (DDSP inference via subprocess) | Pending |
-| 13 | Integration testing and latency benchmarking | Pending |
+| 9 | Implement post-recording transcription (basic-pitch) | Done |
 | 14 | FastAPI API layer with SessionManager, REST routes, WebSocket MIDI stream | Done |
 | 15 | Next.js scaffold with TypeScript, Tailwind, App Router, API proxy | Done |
 | 16 | Frontend components: DeviceSelector, SessionControls, MidiVisualizer, Dashboard | Done |
 | 17 | Wire page.tsx, .gitignore, status.mdc updates | Done |
 
+Incomplete tasks tracked in directory-specific `CLAUDE.md` files (`src/`, `notebooks/`).
+
 ### Known Blockers
 
 - **aubio Python 3.11 wheels**: Use `aubio-ledfx` fork.
-- **DDSP + Python 3.11**: Resolved via subprocess isolation in `.venv-ddsp`.
+- **WaveNet/NSynth (Group 3)**: Training requires GPU and a dataset of ≥500 isolated drum hits per class.
 
 ---
 

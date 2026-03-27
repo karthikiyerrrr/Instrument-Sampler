@@ -105,7 +105,9 @@ Drag the `.mid` file into the FL Studio playlist or use File → Import → MIDI
 
 ## Post-Processing: Audio File Export
 
-The timbre cloning stage (RAVE or DDSP) writes a `.wav` file. No virtual audio cable routing is needed — the user imports the file into FL Studio's playlist or Edison.
+The synthesis stage (DDSP, Karplus-Strong, or WaveNet/NSynth depending on instrument group) writes a `.wav` file. No virtual audio cable routing is needed — the user imports the file into FL Studio's playlist or Edison.
+
+For Group 3 (unpitched percussion), the transcription stage produces onset/envelope data rather than standard MIDI. This data is consumed directly by the WaveNet/NSynth synthesis engine and is not exported as a `.mid` file.
 
 Virtual audio cable routing (BlackHole on macOS, VB-Cable on Windows) remains a **future stretch goal** for when live timbre cloning is added.
 

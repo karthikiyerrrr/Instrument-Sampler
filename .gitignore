@@ -29,11 +29,11 @@ recordings/
 output/
 
 # Trained models (too large for git)
-models/*.ts
-models/*.onnx
-models/*.tflite
-models/*.pt
+models/
 runs/
+
+# Calibrations (user-generated fine-tuned checkpoints)
+calibrations/
 
 # RAVE / DDSP training artifacts
 dataset/
@@ -49,3 +49,8 @@ lightning_logs/
 web/node_modules/
 web/.next/
 web/out/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/**/*.html
+notebooks/**/*.pdf

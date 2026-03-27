@@ -104,7 +104,7 @@ recorder_queue = dispatcher.subscribe(maxsize=128)
 
 ## WAV Recording Consumer
 
-A dedicated consumer thread subscribes to the dispatcher and writes every frame to disk. This recorded file becomes the input for post-processing (basic-pitch transcription, RAVE/DDSP timbre cloning).
+A dedicated consumer thread subscribes to the dispatcher and writes every frame to disk. This recorded file becomes the input for post-processing (preprocessing, transcription, group-specific synthesis).
 
 ```python
 import wave
@@ -130,6 +130,12 @@ def wav_recorder(
 ```
 
 Send `None` as a sentinel to stop the recorder and close the file cleanly.
+
+## Preprocessing Handoff
+
+After recording completes, the WAV file is passed to the preprocessing stage (`src/preprocessing/`) before transcription or synthesis. The ingestion/recording module is NOT responsible for preprocessing — it simply produces the raw WAV. The preprocessing module handles all audio cleaning (denoising, de-reverberation, HPSS, spectral gating) based on the instrument group.
+
+The recording consumer must NOT apply any filtering or normalization to the audio — deliver the raw captured signal so preprocessing can make group-appropriate decisions.
 
 ## Latency Targets
 
